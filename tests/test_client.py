@@ -138,3 +138,40 @@ async def test_is_today_holiday_200_is_true():
 
     client = make_client(handler)
     assert await client.is_today_holiday("us") is True
+
+
+async def test_is_today_holiday_200_empty_body_is_true():
+    """The real API returns 200 with an EMPTY body on a holiday — must be True."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"")
+
+    client = make_client(handler)
+    assert await client.is_today_holiday("PE") is True
+
+
+# -- 400 error message extraction ---------------------------------------------
+
+
+async def test_400_json_errors_body_produces_clean_message():
+    body = {"errors": {"year": ["The specified year '1975' is not supported."]}}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json=body)
+
+    client = make_client(handler)
+    with pytest.raises(ValueError) as exc_info:
+        await client.get_holidays(1975, "US")
+    msg = str(exc_info.value)
+    assert "The specified year '1975' is not supported." in msg
+    # Must not dump the raw JSON structure.
+    assert '{"errors"' not in msg
+    assert '"year"' not in msg
+
+
+async def test_400_non_json_body_falls_back_to_raw_text():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, text="plain text failure")
+
+    client = make_client(handler)
+    with pytest.raises(ValueError, match="plain text failure"):
+        await client.get_holidays(999, "US")

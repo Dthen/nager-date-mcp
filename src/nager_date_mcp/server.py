@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
+import httpx
 from mcp.server.fastmcp import FastMCP
 
 from nager_date_mcp.client import NagerDateClient
@@ -71,12 +72,16 @@ async def get_holidays(
             holidays = [
                 h
                 for h in holidays
-                if h.get("counties") and county_upper in h["counties"]
+                if h.get("global")
+                or not h.get("counties")
+                or county_upper in h["counties"]
             ]
 
         return _enrich_holidays(holidays)
     except ValueError as e:
         return f"Error: {e}"
+    except httpx.HTTPError as e:
+        return f"Error: API request failed — {e}"
 
 
 @mcp.tool()
@@ -101,12 +106,16 @@ async def get_next_holidays(
             holidays = [
                 h
                 for h in holidays
-                if h.get("counties") and county_upper in h["counties"]
+                if h.get("global")
+                or not h.get("counties")
+                or county_upper in h["counties"]
             ]
 
         return _enrich_holidays(holidays)
     except ValueError as e:
         return f"Error: {e}"
+    except httpx.HTTPError as e:
+        return f"Error: API request failed — {e}"
 
 
 # ---------------------------------------------------------------------------
@@ -137,6 +146,8 @@ async def get_long_weekends(
         return await _client.get_long_weekends(y, code)
     except ValueError as e:
         return f"Error: {e}"
+    except httpx.HTTPError as e:
+        return f"Error: API request failed — {e}"
 
 
 @mcp.tool()
@@ -158,6 +169,8 @@ async def is_today_holiday(
         return {"is_holiday": result, "country": code}
     except ValueError as e:
         return f"Error: {e}"
+    except httpx.HTTPError as e:
+        return f"Error: API request failed — {e}"
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +192,8 @@ async def list_countries() -> list[dict] | str:
         ]
     except ValueError as e:
         return f"Error: {e}"
+    except httpx.HTTPError as e:
+        return f"Error: API request failed — {e}"
 
 
 @mcp.tool()
@@ -196,6 +211,8 @@ async def get_country_info(country: str) -> dict | str:
         return await _client.get_country_info(code)
     except ValueError as e:
         return f"Error: {e}"
+    except httpx.HTTPError as e:
+        return f"Error: API request failed — {e}"
 
 
 @mcp.tool()
@@ -210,6 +227,8 @@ async def get_worldwide_holidays() -> list[dict] | str:
         return _enrich_holidays(holidays)
     except ValueError as e:
         return f"Error: {e}"
+    except httpx.HTTPError as e:
+        return f"Error: API request failed — {e}"
 
 
 def main() -> None:

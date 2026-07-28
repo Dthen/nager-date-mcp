@@ -2,6 +2,7 @@
 
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 from nager_date_mcp.server import (
@@ -154,25 +155,31 @@ async def test_get_holidays_filters_by_county():
         return_value=[h.copy() for h in MOCK_HOLIDAYS],
     ):
         result = await get_holidays("GB", year=2025, county="GB-NIR")
-    # New Year's Day (has GB-NIR) and St Patrick's Day (only GB-NIR)
-    assert len(result) == 2
+    # New Year's Day (lists GB-NIR), St Patrick's Day (GB-NIR only), plus the two
+    # global holidays (Good Friday, Valentine's) which apply to every county.
+    assert len(result) == 4
     names = {h["name"] for h in result}
     assert "New Year's Day" in names
     assert "St Patrick's Day" in names
+    assert "Good Friday" in names
+    assert "Valentine's Day" in names
 
 
-async def test_get_holidays_county_excludes_global_null_counties():
-    """Holidays with counties=null (global) are excluded when county filter is set."""
+async def test_get_holidays_county_includes_global_null_counties():
+    """Global holidays (counties=null) ARE included when a county filter is set."""
     with patch(
         "nager_date_mcp.server._client.get_holidays",
         new_callable=AsyncMock,
         return_value=[h.copy() for h in MOCK_HOLIDAYS],
     ):
         result = await get_holidays("GB", year=2025, county="GB-ENG")
-    # Good Friday has counties=None so excluded; Valentine's too
+    # Good Friday (global, counties=None) and Valentine's (global) are included,
+    # plus New Year's Day which lists GB-ENG. St Patrick's (GB-NIR only) excluded.
     names = {h["name"] for h in result}
-    assert "Good Friday" not in names
+    assert "Good Friday" in names
+    assert "Valentine's Day" in names
     assert "New Year's Day" in names
+    assert "St Patrick's Day" not in names
 
 
 async def test_get_holidays_invalid_country_returns_error_string():
@@ -195,6 +202,42 @@ async def test_get_holidays_year_out_of_range_returns_error():
         result = await get_holidays("US", year=1800)
     assert isinstance(result, str)
     assert "1800" in result
+
+
+async def test_get_holidays_network_error_returns_friendly_string():
+    """httpx network errors (ConnectError/timeout) must not propagate."""
+    with patch(
+        "nager_date_mcp.server._client.get_holidays",
+        new_callable=AsyncMock,
+        side_effect=httpx.ConnectError("connection refused"),
+    ):
+        result = await get_holidays("US", year=2025)
+    assert isinstance(result, str)
+    assert result.startswith("Error: API request failed")
+
+
+async def test_is_today_holiday_timeout_returns_friendly_string():
+    with patch(
+        "nager_date_mcp.server._client.is_today_holiday",
+        new_callable=AsyncMock,
+        side_effect=httpx.TimeoutException("timed out"),
+    ):
+        result = await is_today_holiday("PE")
+    assert isinstance(result, str)
+    assert result.startswith("Error: API request failed")
+
+
+async def test_list_countries_server_error_returns_friendly_string():
+    with patch(
+        "nager_date_mcp.server._client.get_available_countries",
+        new_callable=AsyncMock,
+        side_effect=httpx.HTTPStatusError(
+            "500 Server Error", request=httpx.Request("GET", "https://x"), response=httpx.Response(500)
+        ),
+    ):
+        result = await list_countries()
+    assert isinstance(result, str)
+    assert result.startswith("Error: API request failed")
 
 
 # -- get_next_holidays tests ------------------------------------------------
@@ -227,8 +270,10 @@ async def test_get_next_holidays_county_filter():
         return_value=upcoming,
     ):
         result = await get_next_holidays("GB", county="GB-SCT")
-    assert len(result) == 1
-    assert result[0]["name"] == "Regional Day"
+    # Regional (GB-SCT) AND the national/global one (counties=None) are included.
+    assert len(result) == 2
+    names = {h["name"] for h in result}
+    assert names == {"Regional Day", "National Day"}
 
 
 async def test_get_next_holidays_invalid_country():
