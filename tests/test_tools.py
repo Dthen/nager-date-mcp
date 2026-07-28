@@ -7,10 +7,13 @@ import pytest
 from nager_date_mcp.server import (
     _day_of_week,
     _enrich_holidays,
+    get_country_info,
     get_holidays,
     get_long_weekends,
     get_next_holidays,
+    get_worldwide_holidays,
     is_today_holiday,
+    list_countries,
 )
 
 # -- Helper tests -----------------------------------------------------------
@@ -327,5 +330,85 @@ async def test_is_today_holiday_invalid_country():
         side_effect=ValueError("Country not found: QQ"),
     ):
         result = await is_today_holiday("QQ")
+    assert isinstance(result, str)
+    assert "Error" in result
+
+
+# -- list_countries tests ---------------------------------------------------
+
+
+async def test_list_countries_maps_fields():
+    raw = [
+        {"countryCode": "AD", "name": "Andorra"},
+        {"countryCode": "US", "name": "United States"},
+    ]
+    with patch(
+        "nager_date_mcp.server._client.get_available_countries",
+        new_callable=AsyncMock,
+        return_value=raw,
+    ):
+        result = await list_countries()
+    assert result == [
+        {"code": "AD", "name": "Andorra"},
+        {"code": "US", "name": "United States"},
+    ]
+
+
+# -- get_country_info tests -------------------------------------------------
+
+
+async def test_get_country_info_returns_dict():
+    info = {
+        "commonName": "United Kingdom",
+        "officialName": "United Kingdom of Great Britain and Northern Ireland",
+        "countryCode": "GB",
+        "region": "Europe",
+        "borders": [{"commonName": "Ireland", "countryCode": "IE"}],
+    }
+    with patch(
+        "nager_date_mcp.server._client.get_country_info",
+        new_callable=AsyncMock,
+        return_value=info,
+    ):
+        result = await get_country_info("gb")
+    assert result["commonName"] == "United Kingdom"
+    assert result["region"] == "Europe"
+
+
+async def test_get_country_info_invalid_country():
+    with patch(
+        "nager_date_mcp.server._client.get_country_info",
+        new_callable=AsyncMock,
+        side_effect=ValueError("Country not found: ZZ"),
+    ):
+        result = await get_country_info("ZZ")
+    assert isinstance(result, str)
+    assert "Country not found" in result
+
+
+# -- get_worldwide_holidays tests -------------------------------------------
+
+
+async def test_get_worldwide_holidays_enriches():
+    holidays = [
+        {"date": "2026-07-28", "name": "Independence Day", "countryCode": "PE",
+         "types": ["Public"]},
+    ]
+    with patch(
+        "nager_date_mcp.server._client.get_worldwide_holidays",
+        new_callable=AsyncMock,
+        return_value=holidays,
+    ):
+        result = await get_worldwide_holidays()
+    assert result[0]["day_of_week"] == "Tuesday"  # 2026-07-28
+
+
+async def test_get_worldwide_holidays_error():
+    with patch(
+        "nager_date_mcp.server._client.get_worldwide_holidays",
+        new_callable=AsyncMock,
+        side_effect=ValueError("Something went wrong"),
+    ):
+        result = await get_worldwide_holidays()
     assert isinstance(result, str)
     assert "Error" in result

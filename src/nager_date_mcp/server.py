@@ -160,6 +160,58 @@ async def is_today_holiday(
         return f"Error: {e}"
 
 
+# ---------------------------------------------------------------------------
+# Discovery tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def list_countries() -> list[dict] | str:
+    """List all countries supported by the Nager.Date holiday API.
+
+    Returns a list of {code, name} objects for 200+ countries.
+    Use the code values with other tools like get_holidays.
+    """
+    try:
+        countries = await _client.get_available_countries()
+        return [
+            {"code": c["countryCode"], "name": c["name"]} for c in countries
+        ]
+    except ValueError as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
+async def get_country_info(country: str) -> dict | str:
+    """Get detailed information about a country including its region and borders.
+
+    Args:
+        country: ISO 3166-1 alpha-2 country code (e.g. "GB", "DE").
+
+    Returns country metadata: commonName, officialName, region, and
+    a list of bordering countries.
+    """
+    try:
+        code = country.strip().upper()
+        return await _client.get_country_info(code)
+    except ValueError as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
+async def get_worldwide_holidays() -> list[dict] | str:
+    """Get all public holidays happening today worldwide.
+
+    Returns a list of holiday objects from all countries that have
+    a public holiday today, each enriched with day_of_week.
+    """
+    try:
+        holidays = await _client.get_worldwide_holidays()
+        return _enrich_holidays(holidays)
+    except ValueError as e:
+        return f"Error: {e}"
+
+
 def main() -> None:
     """Entry point for running the server over stdio."""
     mcp.run()
