@@ -8,7 +8,9 @@ from nager_date_mcp.server import (
     _day_of_week,
     _enrich_holidays,
     get_holidays,
+    get_long_weekends,
     get_next_holidays,
+    is_today_holiday,
 )
 
 # -- Helper tests -----------------------------------------------------------
@@ -235,3 +237,95 @@ async def test_get_next_holidays_invalid_country():
         result = await get_next_holidays("XX")
     assert isinstance(result, str)
     assert "Country not found" in result
+
+
+# -- get_long_weekends tests ------------------------------------------------
+
+MOCK_LONG_WEEKENDS = [
+    {"startDate": "2025-01-18", "endDate": "2025-01-20", "dayCount": 3,
+     "needBridgeDay": False, "bridgeDays": []},
+    {"startDate": "2025-06-19", "endDate": "2025-06-22", "dayCount": 4,
+     "needBridgeDay": True, "bridgeDays": ["2025-06-20"]},
+]
+
+
+async def test_get_long_weekends_returns_list():
+    with patch(
+        "nager_date_mcp.server._client.get_long_weekends",
+        new_callable=AsyncMock,
+        return_value=MOCK_LONG_WEEKENDS,
+    ):
+        result = await get_long_weekends("US", year=2025)
+    assert len(result) == 2
+    assert result[0]["dayCount"] == 3
+    assert result[1]["needBridgeDay"] is True
+
+
+async def test_get_long_weekends_defaults_year():
+    from datetime import date
+
+    current_year = date.today().year
+    mock = AsyncMock(return_value=[])
+    with patch("nager_date_mcp.server._client.get_long_weekends", mock):
+        await get_long_weekends("US")
+    mock.assert_awaited_once_with(current_year, "US")
+
+
+async def test_get_long_weekends_invalid_country():
+    with patch(
+        "nager_date_mcp.server._client.get_long_weekends",
+        new_callable=AsyncMock,
+        side_effect=ValueError("Country not found: ZZ"),
+    ):
+        result = await get_long_weekends("ZZ")
+    assert isinstance(result, str)
+    assert "Error" in result
+
+
+# -- is_today_holiday tests -------------------------------------------------
+
+
+async def test_is_today_holiday_true():
+    with patch(
+        "nager_date_mcp.server._client.is_today_holiday",
+        new_callable=AsyncMock,
+        return_value=True,
+    ):
+        result = await is_today_holiday("PE")
+    assert result == {"is_holiday": True, "country": "PE"}
+
+
+async def test_is_today_holiday_false():
+    with patch(
+        "nager_date_mcp.server._client.is_today_holiday",
+        new_callable=AsyncMock,
+        return_value=False,
+    ):
+        result = await is_today_holiday("GB")
+    assert result == {"is_holiday": False, "country": "GB"}
+
+
+async def test_is_today_holiday_normalizes_code():
+    mock = AsyncMock(return_value=False)
+    with patch("nager_date_mcp.server._client.is_today_holiday", mock):
+        result = await is_today_holiday("  us  ")
+    assert result["country"] == "US"
+    mock.assert_awaited_once_with("US", county_code=None)
+
+
+async def test_is_today_holiday_passes_county():
+    mock = AsyncMock(return_value=False)
+    with patch("nager_date_mcp.server._client.is_today_holiday", mock):
+        await is_today_holiday("GB", county="GB-ENG")
+    mock.assert_awaited_once_with("GB", county_code="GB-ENG")
+
+
+async def test_is_today_holiday_invalid_country():
+    with patch(
+        "nager_date_mcp.server._client.is_today_holiday",
+        new_callable=AsyncMock,
+        side_effect=ValueError("Country not found: QQ"),
+    ):
+        result = await is_today_holiday("QQ")
+    assert isinstance(result, str)
+    assert "Error" in result

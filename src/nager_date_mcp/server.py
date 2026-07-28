@@ -109,6 +109,57 @@ async def get_next_holidays(
         return f"Error: {e}"
 
 
+# ---------------------------------------------------------------------------
+# Planning tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def get_long_weekends(
+    country: str,
+    year: int | None = None,
+) -> list[dict] | str:
+    """Get all long weekends for a country in a given year.
+
+    A long weekend occurs when a holiday falls adjacent to a weekend,
+    creating an extended break. Includes bridge-day information.
+
+    Args:
+        country: ISO 3166-1 alpha-2 country code (e.g. "US", "GB").
+        year: Year to query (1976–2076). Defaults to the current year.
+
+    Returns a list of long weekend objects with startDate, endDate,
+    dayCount, needBridgeDay, and bridgeDays fields.
+    """
+    try:
+        code = country.strip().upper()
+        y = year if year is not None else date.today().year
+        return await _client.get_long_weekends(y, code)
+    except ValueError as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
+async def is_today_holiday(
+    country: str,
+    county: str | None = None,
+) -> dict | str:
+    """Check whether today is a public holiday in a given country.
+
+    Args:
+        country: ISO 3166-1 alpha-2 country code (e.g. "US", "PE").
+        county: Optional ISO 3166-2 subdivision code for regional check.
+
+    Returns {"is_holiday": true/false, "country": "<CODE>"}.
+    """
+    try:
+        code = country.strip().upper()
+        result = await _client.is_today_holiday(code, county_code=county)
+        return {"is_holiday": result, "country": code}
+    except ValueError as e:
+        return f"Error: {e}"
+
+
 def main() -> None:
     """Entry point for running the server over stdio."""
     mcp.run()
