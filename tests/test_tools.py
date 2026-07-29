@@ -472,6 +472,153 @@ def _mock_transport_client(body: bytes) -> "NagerDateClient":
     return NagerDateClient(client=http)
 
 
+def _mock_204_client() -> "NagerDateClient":
+    """Build a real NagerDateClient whose transport always returns 204 No Content.
+
+    The Nager.Date API returns 204 (not 404) for valid-format country codes it
+    has no data for (IN, SA, AE, TH, ...). The client maps that to None.
+    """
+    transport = httpx.MockTransport(lambda req: httpx.Response(204, content=b""))
+    http = httpx.AsyncClient(
+        base_url="https://date.nager.at/api/v3", transport=transport
+    )
+    return NagerDateClient(client=http)
+
+
+# -- FIX 1: 204 -> None must not crash --------------------------------------
+
+
+async def test_get_holidays_204_returns_friendly_message():
+    """A 204 (None) for an unsupported country must not raise TypeError."""
+    with patch("nager_date_mcp.server._client", _mock_204_client()):
+        result = await get_holidays("IN", year=2026)
+    assert isinstance(result, str)
+    assert "No holiday data available for IN" in result
+
+
+async def test_get_next_holidays_204_returns_friendly_message():
+    """A 204 (None) for an unsupported country must not raise TypeError."""
+    with patch("nager_date_mcp.server._client", _mock_204_client()):
+        result = await get_next_holidays("SA")
+    assert isinstance(result, str)
+    assert "No holiday data available for SA" in result
+
+
+def test_enrich_holidays_none_returns_empty():
+    assert _enrich_holidays(None) == []
+    assert _enrich_holidays([]) == []
+
+
+# -- FIX 2: type filter empty -> helpful note -------------------------------
+
+
+async def test_get_holidays_type_no_match_adds_note():
+    """A type filter that matches nothing (but country has data) adds a note."""
+    with patch(
+        "nager_date_mcp.server._client.get_holidays",
+        new_callable=AsyncMock,
+        return_value=[h.copy() for h in MOCK_HOLIDAYS],
+    ):
+        result = await get_holidays("GB", year=2025, type="school")
+    # No MOCK holiday has type "School" -> dict with empty holidays + note.
+    assert isinstance(result, dict)
+    assert result["holidays"] == []
+    assert "no holidays matched type 'school'" in result["note"]
+    assert "GB" in result["note"]
+
+
+async def test_get_holidays_type_match_no_note():
+    """When the type filter matches, no note is added (plain list)."""
+    with patch(
+        "nager_date_mcp.server._client.get_holidays",
+        new_callable=AsyncMock,
+        return_value=[h.copy() for h in MOCK_HOLIDAYS],
+    ):
+        result = await get_holidays("GB", year=2025, type="public")
+    assert isinstance(result, list)
+    assert len(result) >= 1
+
+
+# -- FIX 3: county filter no regional match -> note -------------------------
+
+
+async def test_get_holidays_county_no_regional_match_adds_note():
+    """A county that matches no regional holiday adds a 'national only' note."""
+    with patch(
+        "nager_date_mcp.server._client.get_holidays",
+        new_callable=AsyncMock,
+        return_value=[h.copy() for h in MOCK_HOLIDAYS],
+    ):
+        result = await get_holidays("GB", year=2025, county="ZZ-NOPE")
+    assert isinstance(result, dict)
+    # Only the two global holidays survive (Good Friday, Valentine's).
+    names = {h["name"] for h in result["holidays"]}
+    assert names == {"Good Friday", "Valentine's Day"}
+    assert "no regional holidays found for county 'ZZ-NOPE'" in result["note"]
+    assert "national holidays only" in result["note"]
+
+
+async def test_get_holidays_county_regional_match_no_note():
+    """When the county matches a regional holiday, no note is added."""
+    with patch(
+        "nager_date_mcp.server._client.get_holidays",
+        new_callable=AsyncMock,
+        return_value=[h.copy() for h in MOCK_HOLIDAYS],
+    ):
+        result = await get_holidays("GB", year=2025, county="GB-NIR")
+    # GB-NIR is a real regional match -> plain list, no note.
+    assert isinstance(result, list)
+
+
+# -- FIX 4: list_countries query filter -------------------------------------
+
+
+async def test_list_countries_query_filters():
+    raw = [
+        {"countryCode": "GB", "name": "United Kingdom"},
+        {"countryCode": "US", "name": "United States"},
+        {"countryCode": "FR", "name": "France"},
+    ]
+    with patch(
+        "nager_date_mcp.server._client.get_available_countries",
+        new_callable=AsyncMock,
+        return_value=raw,
+    ):
+        result = await list_countries(query="united")
+    assert result == [
+        {"code": "GB", "name": "United Kingdom"},
+        {"code": "US", "name": "United States"},
+    ]
+
+
+async def test_list_countries_query_matches_code():
+    raw = [
+        {"countryCode": "GB", "name": "United Kingdom"},
+        {"countryCode": "US", "name": "United States"},
+    ]
+    with patch(
+        "nager_date_mcp.server._client.get_available_countries",
+        new_callable=AsyncMock,
+        return_value=raw,
+    ):
+        result = await list_countries(query="gb")
+    assert result == [{"code": "GB", "name": "United Kingdom"}]
+
+
+async def test_list_countries_no_query_returns_all():
+    raw = [
+        {"countryCode": "GB", "name": "United Kingdom"},
+        {"countryCode": "FR", "name": "France"},
+    ]
+    with patch(
+        "nager_date_mcp.server._client.get_available_countries",
+        new_callable=AsyncMock,
+        return_value=raw,
+    ):
+        result = await list_countries()
+    assert len(result) == 2
+
+
 async def test_get_worldwide_holidays_empty_list_returns_empty():
     """An empty API result must flow through _enrich_holidays([]) -> [] gracefully."""
     with patch("nager_date_mcp.server._client", _mock_transport_client(b"[]")):

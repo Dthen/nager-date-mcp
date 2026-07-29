@@ -24,8 +24,14 @@ def _day_of_week(date_str: str) -> str:
     return d.strftime("%A")
 
 
-def _enrich_holidays(holidays: list[dict]) -> list[dict]:
-    """Add a 'day_of_week' field to each holiday dict."""
+def _enrich_holidays(holidays: list[dict] | None) -> list[dict]:
+    """Add a 'day_of_week' field to each holiday dict.
+
+    Defensive: a None or empty input (e.g. the API returned 204 No Content
+    for an unsupported country) yields an empty list rather than raising.
+    """
+    if not holidays:
+        return []
     for h in holidays:
         if "date" in h:
             h["day_of_week"] = _day_of_week(h["date"])
@@ -43,7 +49,7 @@ async def get_holidays(
     year: int | None = None,
     type: str | None = None,
     county: str | None = None,
-) -> list[dict] | str:
+) -> list[dict] | dict | str:
     """Get all public holidays for a country in a given year.
 
     Args:
@@ -53,31 +59,63 @@ async def get_holidays(
         county: Filter by ISO 3166-2 subdivision code (e.g. "GB-ENG", "US-CA").
 
     Returns a list of holiday objects, each enriched with a day_of_week field.
+    When a filter produces a misleadingly empty/partial result, returns a dict
+    {"holidays": [...], "note": "..."} explaining why. For a country the API
+    has no data for, returns a friendly message string.
     """
     try:
         code = country.strip().upper()
         y = year if year is not None else date.today().year
         holidays = await _client.get_holidays(y, code)
 
+        # The API returns 204 No Content (mapped to None) for valid-format
+        # country codes it has no data for (e.g. IN, SA, AE, TH). Handle
+        # gracefully instead of crashing.
+        if holidays is None:
+            return f"No holiday data available for {code}."
+
+        note: str | None = None
+
         if type is not None:
             type_lower = type.lower()
-            holidays = [
+            filtered = [
                 h
                 for h in holidays
                 if any(type_lower == t.lower() for t in h.get("types", []))
             ]
+            if not filtered and holidays:
+                note = (
+                    f"note: no holidays matched type '{type}' for {code} "
+                    f"(this country may use a different type label)"
+                )
+            holidays = filtered
 
         if county is not None:
             county_upper = county.strip().upper()
-            holidays = [
+            filtered = [
                 h
                 for h in holidays
                 if h.get("global")
                 or not h.get("counties")
                 or county_upper in h["counties"]
             ]
+            # Warn if the county matched no regional holiday (only globals
+            # survived) — a typo'd county otherwise looks like a full answer.
+            regional_match = any(
+                county_upper in (h.get("counties") or []) for h in filtered
+            )
+            if not regional_match:
+                county_note = (
+                    f"note: no regional holidays found for county '{county_upper}'; "
+                    f"showing national holidays only"
+                )
+                note = f"{note}; {county_note}" if note else county_note
+            holidays = filtered
 
-        return _enrich_holidays(holidays)
+        enriched = _enrich_holidays(holidays)
+        if note is not None:
+            return {"holidays": enriched, "note": note}
+        return enriched
     except ValueError as e:
         return f"Error: {e}"
     except httpx.HTTPError as e:
@@ -100,6 +138,10 @@ async def get_next_holidays(
     try:
         code = country.strip().upper()
         holidays = await _client.get_next_holidays(code)
+
+        # 204 No Content (mapped to None) for unsupported countries.
+        if holidays is None:
+            return f"No holiday data available for {code}."
 
         if county is not None:
             county_upper = county.strip().upper()
@@ -182,17 +224,28 @@ async def is_today_holiday(
 
 
 @mcp.tool()
-async def list_countries() -> list[dict] | str:
-    """List all countries supported by the Nager.Date holiday API.
+async def list_countries(query: str | None = None) -> list[dict] | str:
+    """List countries supported by the Nager.Date holiday API.
 
-    Returns a list of {code, name} objects for 200+ countries.
-    Use the code values with other tools like get_holidays.
+    Args:
+        query: Optional case-insensitive substring to filter by country name
+            or code (e.g. "united", "US"). Omit to return all 200+ countries.
+
+    Returns a list of {code, name} objects. Use the code values with other
+    tools like get_holidays.
     """
     try:
         countries = await _client.get_available_countries()
-        return [
-            {"code": c["countryCode"], "name": c["name"]} for c in countries
-        ]
+        mapped = [{"code": c["countryCode"], "name": c["name"]} for c in countries]
+        if query is not None:
+            q = query.strip().lower()
+            if q:
+                mapped = [
+                    c
+                    for c in mapped
+                    if q in c["name"].lower() or q in c["code"].lower()
+                ]
+        return mapped
     except ValueError as e:
         return f"Error: {e}"
     except httpx.HTTPError as e:
