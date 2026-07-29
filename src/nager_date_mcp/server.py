@@ -203,12 +203,33 @@ async def get_long_weekends(
         year: Year to query (1976–2076). Defaults to the current year.
 
     Returns a list of long weekend objects with startDate, endDate,
-    dayCount, needBridgeDay, and bridgeDays fields.
+    dayCount, needBridgeDay, and bridgeDays fields. For a country the API
+    has no data for, returns a friendly message string.
     """
     try:
         code = country.strip().upper()
         y = year if year is not None else date.today().year
-        return await _client.get_long_weekends(y, code)
+        long_weekends = await _client.get_long_weekends(y, code)
+
+        # No-data handling, kept consistent with get_holidays /
+        # get_next_holidays. Unlike those endpoints (which return 204 -> None
+        # for unsupported countries), the LongWeekend endpoint returns 200 with
+        # an EMPTY list for the same unsupported codes (IN, SA, TH, ...). So we
+        # treat None as no-data AND, for an empty result, confirm the country is
+        # actually supported before returning a bare []. A genuinely empty list
+        # for a supported country (no long weekends that year) is returned as-is.
+        if long_weekends is None:
+            return f"No holiday data available for {code}."
+
+        if not long_weekends:
+            supported = {
+                c["countryCode"]
+                for c in await _client.get_available_countries()
+            }
+            if code not in supported:
+                return f"No holiday data available for {code}."
+
+        return long_weekends
     except ValueError as e:
         return f"Error: {e}"
     except httpx.HTTPError as e:

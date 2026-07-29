@@ -315,7 +315,11 @@ async def test_get_long_weekends_defaults_year():
 
     current_year = date.today().year
     mock = AsyncMock(return_value=[])
-    with patch("nager_date_mcp.server._client.get_long_weekends", mock):
+    with patch("nager_date_mcp.server._client.get_long_weekends", mock), patch(
+        "nager_date_mcp.server._client.get_available_countries",
+        new_callable=AsyncMock,
+        return_value=[{"countryCode": "US", "name": "United States"}],
+    ):
         await get_long_weekends("US")
     mock.assert_awaited_once_with(current_year, "US")
 
@@ -502,6 +506,60 @@ async def test_get_next_holidays_204_returns_friendly_message():
         result = await get_next_holidays("SA")
     assert isinstance(result, str)
     assert "No holiday data available for SA" in result
+
+
+async def test_get_long_weekends_204_returns_friendly_message():
+    """A 204 (None) for an unsupported country must return the friendly
+    no-data message, NOT a silent empty list — consistent with siblings."""
+    with patch("nager_date_mcp.server._client", _mock_204_client()):
+        result = await get_long_weekends("IN", year=2026)
+    assert isinstance(result, str)
+    assert "No holiday data available for IN" in result
+    assert result != []
+
+
+async def test_get_long_weekends_empty_for_unsupported_country_friendly_message():
+    """The real LongWeekend endpoint returns 200 + [] (NOT 204) for unsupported
+    countries like IN. An empty result for an unsupported country must still
+    surface the friendly no-data message rather than a silent []."""
+    client = _mock_204_client()  # real client; we patch its methods below
+    with patch.object(
+        client, "get_long_weekends", new=AsyncMock(return_value=[])
+    ), patch.object(
+        client,
+        "get_available_countries",
+        new=AsyncMock(return_value=[{"countryCode": "US", "name": "United States"}]),
+    ), patch("nager_date_mcp.server._client", client):
+        result = await get_long_weekends("IN", year=2026)
+    assert isinstance(result, str)
+    assert "No holiday data available for IN" in result
+
+
+async def test_get_long_weekends_empty_for_supported_country_returns_list():
+    """A genuinely empty result for a SUPPORTED country (no long weekends that
+    year) must be returned as-is — NOT turned into a no-data message."""
+    client = _mock_204_client()
+    with patch.object(
+        client, "get_long_weekends", new=AsyncMock(return_value=[])
+    ), patch.object(
+        client,
+        "get_available_countries",
+        new=AsyncMock(return_value=[{"countryCode": "US", "name": "United States"}]),
+    ), patch("nager_date_mcp.server._client", client):
+        result = await get_long_weekends("US", year=2026)
+    assert result == []
+
+
+async def test_get_long_weekends_supported_country_returns_list():
+    """No regression: a supported country still returns the real list."""
+    with patch(
+        "nager_date_mcp.server._client.get_long_weekends",
+        new_callable=AsyncMock,
+        return_value=MOCK_LONG_WEEKENDS,
+    ):
+        result = await get_long_weekends("US", year=2025)
+    assert isinstance(result, list)
+    assert result == MOCK_LONG_WEEKENDS
 
 
 def test_enrich_holidays_none_returns_empty():
