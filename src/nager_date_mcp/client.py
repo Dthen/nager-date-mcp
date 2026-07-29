@@ -182,7 +182,7 @@ class NagerDateClient:
         country_code: str,
         county_code: str | None = None,
         offset: int | None = None,
-    ) -> bool:
+    ) -> bool | None:
         code = _normalize_country_code(country_code)
         params: dict[str, Any] = {}
         if county_code is not None:
@@ -192,13 +192,22 @@ class NagerDateClient:
         query = "&".join(f"{k}={v}" for k, v in params.items())
         path = f"/IsTodayPublicHoliday/{code}" + (f"?{query}" if query else "")
         # This endpoint returns 200 with an EMPTY body when today is a holiday,
-        # and 204 (no content) when it is not. Do NOT parse the body — decide
-        # purely on the status code. (cache_ttl=0: holiday status is volatile.)
+        # and 204 (no content) otherwise. Do NOT parse the body — decide purely
+        # on the status code. (cache_ttl=0: holiday status is volatile.)
+        #
+        # The 204 is ambiguous: the API returns it BOTH for an unsupported
+        # country (no data, e.g. IN/SA/AE/TH) AND for a supported country where
+        # today simply isn't a holiday. The client cannot tell these apart, so
+        # it reports the raw signal and lets the caller disambiguate:
+        #   - True  -> 200, today IS a holiday
+        #   - None  -> 204, ambiguous (no-data OR not-a-holiday)
+        # A genuine 404/400/5xx still raises via _handle_response, so callers
+        # never see those collapsed into None.
         response = await self._client.get(path)
         if response.status_code == 200:
             return True
         if response.status_code == 204:
-            return False
+            return None
         # Any other status (404, 400, 5xx, ...) goes through the normal mapper.
         self._handle_response(response)
-        return False  # unreachable; _handle_response raises for non-2xx
+        return None  # unreachable; _handle_response raises for non-2xx

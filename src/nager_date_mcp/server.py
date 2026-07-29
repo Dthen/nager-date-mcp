@@ -250,12 +250,34 @@ async def is_today_holiday(
         offset: UTC timezone offset for determining 'today', e.g. -5 for
             US Eastern. Defaults to UTC.
 
-    Returns {"is_holiday": true/false, "country": "<CODE>"}.
+    Returns {"is_holiday": true/false, "country": "<CODE>"}. For a country the
+    API has no data for, returns a friendly message string (consistent with the
+    other tools) rather than a misleading "is_holiday: false".
     """
     try:
         code = country.strip().upper()
         result = await _client.is_today_holiday(code, county_code=county, offset=offset)
-        return {"is_holiday": result, "country": code}
+
+        # 200 -> today is a holiday.
+        if result is True:
+            return {"is_holiday": True, "country": code}
+
+        # 204 is ambiguous: the API returns it both for an unsupported country
+        # (no data) and for a supported country where today isn't a holiday.
+        # Disambiguate against the cached supported-countries list — mirroring
+        # get_long_weekends — so we never report a bare "not a holiday" for a
+        # country the API simply has no data for.
+        if result is None:
+            supported = {
+                c["countryCode"]
+                for c in await _client.get_available_countries()
+            }
+            if code not in supported:
+                return f"No holiday data available for {code}."
+            return {"is_holiday": False, "country": code}
+
+        # Defensive fallback (client only returns True or None today).
+        return {"is_holiday": False, "country": code}
     except ValueError as e:
         return f"Error: {e}"
     except httpx.HTTPError as e:

@@ -164,12 +164,13 @@ async def test_endpoint_uses_uppercase_code_in_path():
 # -- is_today_holiday 204 handling ----------------------------------------
 
 
-async def test_is_today_holiday_204_is_false():
+async def test_is_today_holiday_204_is_none():
+    """204 is ambiguous (no-data OR not-a-holiday) — client reports None."""
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(204)
 
     client = make_client(handler)
-    assert await client.is_today_holiday("US") is False
+    assert await client.is_today_holiday("US") is None
 
 
 async def test_is_today_holiday_200_is_true():

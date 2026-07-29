@@ -349,26 +349,66 @@ async def test_is_today_holiday_true():
 
 
 async def test_is_today_holiday_false():
-    with patch(
-        "nager_date_mcp.server._client.is_today_holiday",
-        new_callable=AsyncMock,
-        return_value=False,
+    """Supported country where today isn't a holiday (204 + in supported list)."""
+    with (
+        patch(
+            "nager_date_mcp.server._client.is_today_holiday",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            "nager_date_mcp.server._client.get_available_countries",
+            new_callable=AsyncMock,
+            return_value=[{"countryCode": "GB", "name": "United Kingdom"}],
+        ),
     ):
         result = await is_today_holiday("GB")
     assert result == {"is_holiday": False, "country": "GB"}
 
 
+async def test_is_today_holiday_unsupported_country_returns_no_data_message():
+    """Unsupported country (204 + NOT in supported list) -> friendly no-data msg."""
+    with (
+        patch(
+            "nager_date_mcp.server._client.is_today_holiday",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            "nager_date_mcp.server._client.get_available_countries",
+            new_callable=AsyncMock,
+            return_value=[{"countryCode": "US", "name": "United States"}],
+        ),
+    ):
+        result = await is_today_holiday("IN")
+    assert result == "No holiday data available for IN."
+
+
 async def test_is_today_holiday_normalizes_code():
-    mock = AsyncMock(return_value=False)
-    with patch("nager_date_mcp.server._client.is_today_holiday", mock):
+    mock = AsyncMock(return_value=None)
+    with (
+        patch("nager_date_mcp.server._client.is_today_holiday", mock),
+        patch(
+            "nager_date_mcp.server._client.get_available_countries",
+            new_callable=AsyncMock,
+            return_value=[{"countryCode": "US", "name": "United States"}],
+        ),
+    ):
         result = await is_today_holiday("  us  ")
     assert result["country"] == "US"
     mock.assert_awaited_once_with("US", county_code=None, offset=None)
 
 
 async def test_is_today_holiday_passes_county():
-    mock = AsyncMock(return_value=False)
-    with patch("nager_date_mcp.server._client.is_today_holiday", mock):
+    mock = AsyncMock(return_value=None)
+    with (
+        patch("nager_date_mcp.server._client.is_today_holiday", mock),
+        patch(
+            "nager_date_mcp.server._client.get_available_countries",
+            new_callable=AsyncMock,
+            return_value=[{"countryCode": "GB", "name": "United Kingdom"}],
+        ),
+    ):
         await is_today_holiday("GB", county="GB-ENG")
     mock.assert_awaited_once_with("GB", county_code="GB-ENG", offset=None)
 
