@@ -7,7 +7,7 @@ MCP server wrapping the [Nager.Date](https://github.com/nager/Nager.Date) API �
 - **get_holidays(country, year?, type?, county?)** — All holidays for a country/year. Filter by type (Public, Bank, School, Observance, etc.) or subdivision (e.g. GB-SCT, DE-BY). Includes day-of-week.
 - **get_next_holidays(country, county?)** — Upcoming holidays from today forward.
 - **get_long_weekends(country, year?)** — Long weekends with bridge day suggestions.
-- **is_today_holiday(country, county?)** — Quick yes/no: is today a public holiday?
+- **is_today_holiday(country, county?, offset?)** — Quick yes/no: is today a public holiday? Optional UTC offset for timezone.
 - **list_countries()** — All 202 supported countries.
 - **get_country_info(country)** — Country metadata: official name, region, borders.
 - **get_worldwide_holidays()** — Every holiday happening today, globally.
