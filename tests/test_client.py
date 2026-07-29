@@ -69,6 +69,46 @@ async def test_ttl_zero_bypasses_cache():
     assert calls["n"] == 2
 
 
+async def test_cache_is_bounded_evicts_oldest(monkeypatch):
+    """Filling the cache past MAX_CACHE_SIZE evicts the oldest entries."""
+    import nager_date_mcp.client as client_mod
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[{"name": "Holiday"}])
+
+    fake_time = {"t": 1000.0}
+    monkeypatch.setattr(client_mod.time, "monotonic", lambda: fake_time["t"])
+
+    client = make_client(handler)
+    total = client_mod.MAX_CACHE_SIZE + 50
+    for i in range(total):
+        fake_time["t"] += 1.0  # strictly increasing timestamps
+        await client.get(f"/path/{i}", cache_ttl=3600)
+
+    # Cache never grows beyond the bound.
+    assert len(client._cache) == client_mod.MAX_CACHE_SIZE
+    # Oldest entries were evicted; newest retained.
+    assert "/path/0" not in client._cache
+    assert f"/path/{total - 1}" in client._cache
+
+
+async def test_cache_returns_copies_not_references():
+    """Mutating a returned result must not corrupt the cached data."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[{"name": "New Year", "date": "2024-01-01"}])
+
+    client = make_client(handler)
+    first = await client.get("/NextPublicHolidays/US", cache_ttl=3600)
+    # Mutate the returned data (list + inner dict), as _enrich_holidays does.
+    first[0]["day_of_week"] = "MUTATED"
+    first.append({"name": "INJECTED"})
+
+    second = await client.get("/NextPublicHolidays/US", cache_ttl=3600)
+    assert second == [{"name": "New Year", "date": "2024-01-01"}]
+    assert "day_of_week" not in second[0]
+    assert len(second) == 1
+
+
 # -- Error mapping ---------------------------------------------------------
 
 

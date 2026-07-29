@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import time
 from typing import Any
 
@@ -13,6 +14,11 @@ BASE_URL = "https://date.nager.at/api/v3"
 TTL_HOUR = 3600
 TTL_DAY = 24 * 3600
 TTL_WEEK = 7 * 24 * 3600
+
+# Maximum number of entries retained in the in-memory cache. When the cache
+# exceeds this size after an insert, the oldest entries (by timestamp) are
+# evicted so a long-running server cannot grow the cache without bound.
+MAX_CACHE_SIZE = 256
 
 
 def _normalize_country_code(code: str) -> str:
@@ -104,14 +110,28 @@ class NagerDateClient:
             if cached is not None:
                 ts, data = cached
                 if now - ts < ttl:
-                    return data
+                    # Return a deep copy so callers cannot mutate the cached
+                    # data (e.g. server-side enrichment adding fields in place).
+                    return copy.deepcopy(data)
 
         response = await self._client.get(path)
         data = self._handle_response(response)
 
         if ttl > 0:
             self._cache[cache_key] = (now, data)
-        return data
+            self._evict_if_needed()
+        # Return a copy of freshly-fetched data too, for a consistent contract.
+        return copy.deepcopy(data)
+
+    def _evict_if_needed(self) -> None:
+        """Drop the oldest cache entries when the cache exceeds MAX_CACHE_SIZE."""
+        if len(self._cache) <= MAX_CACHE_SIZE:
+            return
+        # Order keys by timestamp (oldest first) and remove the excess.
+        ordered = sorted(self._cache, key=lambda k: self._cache[k][0])
+        excess = len(self._cache) - MAX_CACHE_SIZE
+        for key in ordered[:excess]:
+            del self._cache[key]
 
     @staticmethod
     def _handle_response(response: httpx.Response) -> Any:
