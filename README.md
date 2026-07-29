@@ -12,6 +12,15 @@ MCP server wrapping the [Nager.Date](https://github.com/nager/Nager.Date) API �
 - **get_country_info(country)** — Country metadata: official name, region, borders.
 - **get_worldwide_holidays()** — Every holiday happening today, globally.
 
+## Return shape convention
+
+`get_holidays` and `get_next_holidays` normally return a **plain list** of holiday objects. When a filter produces a result that could mislead, they instead return a **dict** `{"holidays": [...], "note": "..."}` where `note` explains the caveat:
+
+- A `type` filter matched no holiday (the country may use a different type label).
+- A `county` filter matched no *regional* holiday, so only national/global holidays are shown (often a typo'd subdivision code).
+
+LLM consumers should handle both shapes: if the result is a dict, surface the `note` and read the holidays from `result["holidays"]`; if it's a list, use it directly. Error and no-data cases return a plain string message.
+
 ## Features
 
 - No API key required — uses the free public API

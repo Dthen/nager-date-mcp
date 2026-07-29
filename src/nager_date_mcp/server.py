@@ -34,7 +34,12 @@ def _enrich_holidays(holidays: list[dict] | None) -> list[dict]:
         return []
     for h in holidays:
         if "date" in h:
-            h["day_of_week"] = _day_of_week(h["date"])
+            try:
+                h["day_of_week"] = _day_of_week(h["date"])
+            except (ValueError, TypeError):
+                # A single malformed/missing date must not sink the whole
+                # response — mark it None and keep the good records.
+                h["day_of_week"] = None
     return holidays
 
 
@@ -126,7 +131,7 @@ async def get_holidays(
 async def get_next_holidays(
     country: str,
     county: str | None = None,
-) -> list[dict] | str:
+) -> list[dict] | dict | str:
     """Get the upcoming public holidays for a country (from today forward).
 
     Args:
@@ -134,6 +139,9 @@ async def get_next_holidays(
         county: Optional ISO 3166-2 subdivision code to filter regional holidays.
 
     Returns a list of upcoming holiday objects, each enriched with day_of_week.
+    When a county filter matches no regional holiday (only globals survive),
+    returns a dict {"holidays": [...], "note": "..."} explaining why — mirroring
+    get_holidays' convention.
     """
     try:
         code = country.strip().upper()
@@ -142,6 +150,8 @@ async def get_next_holidays(
         # 204 No Content (mapped to None) for unsupported countries.
         if holidays is None:
             return f"No holiday data available for {code}."
+
+        note: str | None = None
 
         if county is not None:
             county_upper = county.strip().upper()
@@ -152,8 +162,21 @@ async def get_next_holidays(
                 or not h.get("counties")
                 or county_upper in h["counties"]
             ]
+            # Warn if the county matched no regional holiday (only globals
+            # survived) — a typo'd county otherwise looks like a full answer.
+            regional_match = any(
+                county_upper in (h.get("counties") or []) for h in holidays
+            )
+            if not regional_match:
+                note = (
+                    f"note: no regional holidays found for county '{county_upper}'; "
+                    f"showing national holidays only"
+                )
 
-        return _enrich_holidays(holidays)
+        enriched = _enrich_holidays(holidays)
+        if note is not None:
+            return {"holidays": enriched, "note": note}
+        return enriched
     except ValueError as e:
         return f"Error: {e}"
     except httpx.HTTPError as e:

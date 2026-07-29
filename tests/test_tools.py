@@ -631,3 +631,61 @@ async def test_get_next_holidays_empty_list_returns_empty():
     with patch("nager_date_mcp.server._client", _mock_transport_client(b"[]")):
         result = await get_next_holidays("GB")
     assert result == []
+
+
+# -- get_next_holidays county no-regional-match note (mirrors get_holidays) --
+
+
+async def test_get_next_holidays_county_no_regional_match_adds_note():
+    """A county that matches no regional holiday adds a 'national only' note."""
+    upcoming = [
+        {"date": "2026-08-01", "name": "Regional Day", "countryCode": "GB",
+         "counties": ["GB-SCT"], "types": ["Public"]},
+        {"date": "2026-08-15", "name": "National Day", "countryCode": "GB",
+         "counties": None, "types": ["Public"]},
+    ]
+    with patch(
+        "nager_date_mcp.server._client.get_next_holidays",
+        new_callable=AsyncMock,
+        return_value=upcoming,
+    ):
+        result = await get_next_holidays("GB", county="ZZ-NOPE")
+    assert isinstance(result, dict)
+    # Only the national/global holiday survives the filter.
+    names = {h["name"] for h in result["holidays"]}
+    assert names == {"National Day"}
+    assert "no regional holidays found for county 'ZZ-NOPE'" in result["note"]
+    assert "national holidays only" in result["note"]
+
+
+async def test_get_next_holidays_county_regional_match_no_note():
+    """When the county matches a regional holiday, a plain list is returned."""
+    upcoming = [
+        {"date": "2026-08-01", "name": "Regional Day", "countryCode": "GB",
+         "counties": ["GB-SCT"], "types": ["Public"]},
+        {"date": "2026-08-15", "name": "National Day", "countryCode": "GB",
+         "counties": None, "types": ["Public"]},
+    ]
+    with patch(
+        "nager_date_mcp.server._client.get_next_holidays",
+        new_callable=AsyncMock,
+        return_value=upcoming,
+    ):
+        result = await get_next_holidays("GB", county="GB-SCT")
+    assert isinstance(result, list)
+    assert len(result) == 2
+
+
+# -- per-record date-parse resilience in _enrich_holidays -------------------
+
+
+def test_enrich_holidays_malformed_date_does_not_crash():
+    """One bad date must not sink the whole response: good records keep their
+    day_of_week, the bad record gets day_of_week=None, no exception raised."""
+    holidays = [
+        {"date": "2025-01-01", "name": "Good"},
+        {"date": "not-a-date", "name": "Bad"},
+    ]
+    result = _enrich_holidays(holidays)
+    assert result[0]["day_of_week"] == "Wednesday"
+    assert result[1]["day_of_week"] is None
