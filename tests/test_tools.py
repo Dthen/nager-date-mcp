@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
+from nager_date_mcp.client import NagerDateClient
 from nager_date_mcp.server import (
     _day_of_week,
     _enrich_holidays,
@@ -358,14 +359,14 @@ async def test_is_today_holiday_normalizes_code():
     with patch("nager_date_mcp.server._client.is_today_holiday", mock):
         result = await is_today_holiday("  us  ")
     assert result["country"] == "US"
-    mock.assert_awaited_once_with("US", county_code=None)
+    mock.assert_awaited_once_with("US", county_code=None, offset=None)
 
 
 async def test_is_today_holiday_passes_county():
     mock = AsyncMock(return_value=False)
     with patch("nager_date_mcp.server._client.is_today_holiday", mock):
         await is_today_holiday("GB", county="GB-ENG")
-    mock.assert_awaited_once_with("GB", county_code="GB-ENG")
+    mock.assert_awaited_once_with("GB", county_code="GB-ENG", offset=None)
 
 
 async def test_is_today_holiday_invalid_country():
@@ -457,3 +458,29 @@ async def test_get_worldwide_holidays_error():
         result = await get_worldwide_holidays()
     assert isinstance(result, str)
     assert "Error" in result
+
+
+# -- empty-list handling ----------------------------------------------------
+
+
+def _mock_transport_client(body: bytes) -> "NagerDateClient":
+    """Build a real NagerDateClient backed by an httpx.MockTransport."""
+    transport = httpx.MockTransport(lambda req: httpx.Response(200, content=body))
+    http = httpx.AsyncClient(
+        base_url="https://date.nager.at/api/v3", transport=transport
+    )
+    return NagerDateClient(client=http)
+
+
+async def test_get_worldwide_holidays_empty_list_returns_empty():
+    """An empty API result must flow through _enrich_holidays([]) -> [] gracefully."""
+    with patch("nager_date_mcp.server._client", _mock_transport_client(b"[]")):
+        result = await get_worldwide_holidays()
+    assert result == []
+
+
+async def test_get_next_holidays_empty_list_returns_empty():
+    """An empty API result must flow through _enrich_holidays([]) -> [] gracefully."""
+    with patch("nager_date_mcp.server._client", _mock_transport_client(b"[]")):
+        result = await get_next_holidays("GB")
+    assert result == []

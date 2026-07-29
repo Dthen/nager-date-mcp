@@ -154,18 +154,21 @@ async def get_long_weekends(
 async def is_today_holiday(
     country: str,
     county: str | None = None,
+    offset: int | None = None,
 ) -> dict | str:
     """Check whether today is a public holiday in a given country.
 
     Args:
         country: ISO 3166-1 alpha-2 country code (e.g. "US", "PE").
         county: Optional ISO 3166-2 subdivision code for regional check.
+        offset: UTC timezone offset for determining 'today', e.g. -5 for
+            US Eastern. Defaults to UTC.
 
     Returns {"is_holiday": true/false, "country": "<CODE>"}.
     """
     try:
         code = country.strip().upper()
-        result = await _client.is_today_holiday(code, county_code=county)
+        result = await _client.is_today_holiday(code, county_code=county, offset=offset)
         return {"is_holiday": result, "country": code}
     except ValueError as e:
         return f"Error: {e}"
