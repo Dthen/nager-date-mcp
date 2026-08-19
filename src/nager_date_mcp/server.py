@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime
 
 import httpx
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 
 from nager_date_mcp.client import NagerDateClient
 
