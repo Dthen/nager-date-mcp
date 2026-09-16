@@ -1,4 +1,4 @@
-"""Async HTTP client for the Nager.Date API with an in-memory TTL cache."""
+"""HTTP client for the Nager.Date API with an in-memory TTL cache."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import copy
 import time
 from typing import Any
 
-import httpx
+from nager_date_mcp.transport import SeamResponse, fetch_raw
 
 BASE_URL = "https://date.nager.at/api/v3"
 
@@ -28,7 +28,7 @@ def _normalize_country_code(code: str) -> str:
     return code.strip().upper()
 
 
-def _extract_error_message(response: httpx.Response) -> str:
+def _extract_error_message(response: SeamResponse) -> str:
     """Extract a human-readable message from an API error response body.
 
     The Nager.Date API returns errors like:
@@ -62,7 +62,15 @@ def _extract_error_message(response: httpx.Response) -> str:
 
 
 class NagerDateClient:
-    """Thin async wrapper around the public Nager.Date REST API.
+    """Thin wrapper around the public Nager.Date REST API.
+
+    Sync over the stdlib transport seam (``transport.fetch_raw``): the
+    server runs a single-threaded stdio loop, so there is nothing to
+    overlap (PLAN D5 — the legacy coroutines are dead code, deleted not
+    ported). Transport errors (URLError/HTTPError) propagate uncaught
+    here by design: the legacy client had no transport-level ``except``
+    (R2 fact 1) and the friendly fold lives at the server handler layer
+    (R2 fact 2).
 
     Responses are cached in-memory keyed by request path, with a
     per-call configurable TTL. The cache is a plain dict mapping
@@ -72,30 +80,17 @@ class NagerDateClient:
     def __init__(
         self,
         base_url: str = BASE_URL,
-        client: httpx.AsyncClient | None = None,
         default_ttl: int = TTL_HOUR,
     ) -> None:
         self.base_url = base_url
         self.default_ttl = default_ttl
-        self._client = client or httpx.AsyncClient(base_url=base_url)
-        self._owns_client = client is None
         # cache_key -> (timestamp, data)
         self._cache: dict[str, tuple[float, Any]] = {}
-
-    async def __aenter__(self) -> "NagerDateClient":
-        return self
-
-    async def __aexit__(self, *exc: object) -> None:
-        await self.aclose()
-
-    async def aclose(self) -> None:
-        if self._owns_client:
-            await self._client.aclose()
 
     def clear_cache(self) -> None:
         self._cache.clear()
 
-    async def get(self, path: str, cache_ttl: int | None = None) -> Any:
+    def get(self, path: str, cache_ttl: int | None = None) -> Any:
         """GET ``path`` (relative to base URL), returning cached data when fresh.
 
         ``cache_ttl`` overrides the instance default for this call. Pass
@@ -114,7 +109,9 @@ class NagerDateClient:
                     # data (e.g. server-side enrichment adding fields in place).
                     return copy.deepcopy(data)
 
-        response = await self._client.get(path)
+        # Literal `base_url + path` concat — urljoin would drop the /api/v3
+        # prefix (seam fact, _chain.md; transport.fetch_raw docstring).
+        response = fetch_raw(self.base_url + path)
         data = self._handle_response(response)
 
         if ttl > 0:
@@ -134,7 +131,7 @@ class NagerDateClient:
             del self._cache[key]
 
     @staticmethod
-    def _handle_response(response: httpx.Response) -> Any:
+    def _handle_response(response: SeamResponse) -> Any:
         """Map HTTP status codes to return values / exceptions."""
         if response.status_code == 204:
             return None
@@ -155,29 +152,29 @@ class NagerDateClient:
 
     # -- Endpoint wrappers -------------------------------------------------
 
-    async def get_holidays(self, year: int, country_code: str) -> list[dict]:
+    def get_holidays(self, year: int, country_code: str) -> list[dict]:
         code = _normalize_country_code(country_code)
-        return await self.get(f"/PublicHolidays/{year}/{code}", cache_ttl=TTL_DAY)
+        return self.get(f"/PublicHolidays/{year}/{code}", cache_ttl=TTL_DAY)
 
-    async def get_next_holidays(self, country_code: str) -> list[dict]:
+    def get_next_holidays(self, country_code: str) -> list[dict]:
         code = _normalize_country_code(country_code)
-        return await self.get(f"/NextPublicHolidays/{code}", cache_ttl=TTL_HOUR)
+        return self.get(f"/NextPublicHolidays/{code}", cache_ttl=TTL_HOUR)
 
-    async def get_worldwide_holidays(self) -> list[dict]:
-        return await self.get("/NextPublicHolidaysWorldwide", cache_ttl=TTL_HOUR)
+    def get_worldwide_holidays(self) -> list[dict]:
+        return self.get("/NextPublicHolidaysWorldwide", cache_ttl=TTL_HOUR)
 
-    async def get_country_info(self, country_code: str) -> dict:
+    def get_country_info(self, country_code: str) -> dict:
         code = _normalize_country_code(country_code)
-        return await self.get(f"/CountryInfo/{code}", cache_ttl=TTL_WEEK)
+        return self.get(f"/CountryInfo/{code}", cache_ttl=TTL_WEEK)
 
-    async def get_available_countries(self) -> list[dict]:
-        return await self.get("/AvailableCountries", cache_ttl=TTL_WEEK)
+    def get_available_countries(self) -> list[dict]:
+        return self.get("/AvailableCountries", cache_ttl=TTL_WEEK)
 
-    async def get_long_weekends(self, year: int, country_code: str) -> list[dict]:
+    def get_long_weekends(self, year: int, country_code: str) -> list[dict]:
         code = _normalize_country_code(country_code)
-        return await self.get(f"/LongWeekend/{year}/{code}", cache_ttl=TTL_DAY)
+        return self.get(f"/LongWeekend/{year}/{code}", cache_ttl=TTL_DAY)
 
-    async def is_today_holiday(
+    def is_today_holiday(
         self,
         country_code: str,
         county_code: str | None = None,
@@ -203,7 +200,7 @@ class NagerDateClient:
         #   - None  -> 204, ambiguous (no-data OR not-a-holiday)
         # A genuine 404/400/5xx still raises via _handle_response, so callers
         # never see those collapsed into None.
-        response = await self._client.get(path)
+        response = fetch_raw(self.base_url + path)
         if response.status_code == 200:
             return True
         if response.status_code == 204:
