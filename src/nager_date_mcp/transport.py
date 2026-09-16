@@ -42,7 +42,7 @@ from typing import Any
 # Explicit User-Agent: bare-urllib requests occasionally draw Cloudflare
 # "403 error code: 1010" on this API (seam fact, _chain.md), while
 # `python-httpx/0.28.1` and the default-UA request on /api/v3 got 200. The
-# value follows the fleet precedent shape (`crtsh-mcp/0.1.0`,
+# value follows the fleet precedent shape (`crtsh-mcp`,
 # src/crtsh_mcp/client.py:58). The live smoke in T10/T11 is the arbiter; the
 # UA is NOT part of the frozen surface, so it is recorded here in code.
 USER_AGENT = "nager-date-mcp/0.3.0"

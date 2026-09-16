@@ -32,20 +32,27 @@ LLM consumers should handle both shapes: if the result is a dict, surface the `n
 
 ## Install
 
+Zero runtime dependencies — the server is stdlib-only Python (urllib +
+newline-delimited JSON-RPC over stdio, no framework). Only a Python ≥ 3.10
+interpreter is required; nothing is fetched from PyPI at runtime.
+
+The production interpreter lives in a dedicated venv:
+
 ```bash
-cd nager-date-mcp
-pip install -e .
+/mnt/HC_Volume_105667182/kimbo/mcp-venvs/nager-date-mcp-v2/bin/python3 -m nager_date_mcp.server
 ```
 
 ## Configure (Hermes)
 
-Add to your Hermes `config.yaml` under `mcp_servers`:
+Add to your Hermes `config.yaml` under `mcp_servers` (the v2 command is the
+production invocation; `-m` is kept):
 
 ```yaml
 mcp_servers:
   nager-date:
-    command: python
+    command: /mnt/HC_Volume_105667182/kimbo/mcp-venvs/nager-date-mcp-v2/bin/python3
     args: ["-m", "nager_date_mcp.server"]
+    protocol: stateless
 ```
 
 Or for Claude Desktop / other MCP clients:
@@ -54,7 +61,7 @@ Or for Claude Desktop / other MCP clients:
 {
   "mcpServers": {
     "nager-date": {
-      "command": "python",
+      "command": "/mnt/HC_Volume_105667182/kimbo/mcp-venvs/nager-date-mcp-v2/bin/python3",
       "args": ["-m", "nager_date_mcp.server"]
     }
   }
@@ -63,9 +70,12 @@ Or for Claude Desktop / other MCP clients:
 
 ## Development
 
+Install pytest into any Python ≥ 3.10 environment (tests never live in the
+runtime venv) and run the suite from the repo root:
+
 ```bash
-pip install -e ".[dev]"
-python -m pytest tests/ -v
+python3 -m pip install pytest
+python3 -m pytest tests/ -v
 ```
 
 ## API Details

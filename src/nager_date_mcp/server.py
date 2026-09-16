@@ -22,7 +22,7 @@ def send(resp):
 
 
 ERA_VERSION = "2026-07-28"
-SERVER_INFO = {"name": "nager-date", "version": "0.2.0"}
+SERVER_INFO = {"name": "nager-date", "version": "0.3.0"}
 ERA_RESULT_FIELDS = {"resultType": "complete", "ttlMs": 0, "cacheScope": "private"}
 RESULT_META = {"io.modelcontextprotocol/serverInfo": SERVER_INFO}
 
