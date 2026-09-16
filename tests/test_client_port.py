@@ -142,6 +142,35 @@ def test_cache_returns_copies_not_references(monkeypatch, no_clock_drift):
     assert len(fake.urls) == 1  # still served from the pristine cache entry
 
 
+def test_cache_hit_return_mutation_does_not_poison_cache(monkeypatch, no_clock_drift):
+    """T08-review follow-up (mutation-tested): the CACHE-HIT branch must
+    deepcopy, not return the stored object. The legacy test above only
+    mutates a FRESH return; with ``return data`` on the hit path that
+    mutation reaches straight into the cache entry (the real server's
+    _enrich_holidays mutates returned values in place). Here the mutation
+    is applied to a value that already came out of the cache, then the
+    cache is read a third time — it must still be pristine."""
+    payload = {"country": "US", "holidays": [{"name": "New Year"}]}
+    fake = FakeFetch(seam(text=json.dumps(payload)))
+    monkeypatch.setattr(client_mod, "fetch_raw", fake)
+    client = NagerDateClient()
+
+    client.get("/CountryInfo/US", cache_ttl=3600)          # prime (fresh path)
+    hit = client.get("/CountryInfo/US", cache_ttl=3600)    # cache-hit path
+    assert len(fake.urls) == 1                             # hit proven
+    # Mutate the hit-returned dict AND its nested list, in place.
+    hit["holidays"].append({"name": "INJECTED"})
+    hit["holidays"][0]["day_of_week"] = "MUTATED"
+    hit["poisoned"] = True
+
+    again = client.get("/CountryInfo/US", cache_ttl=3600)  # second hit
+    assert again == {"country": "US", "holidays": [{"name": "New Year"}]}
+    assert "poisoned" not in again
+    assert len(again["holidays"]) == 1
+    assert "day_of_week" not in again["holidays"][0]
+    assert len(fake.urls) == 1  # still served from the un-poisoned cache entry
+
+
 # -- URL construction ---------------------------------------------------------
 
 
