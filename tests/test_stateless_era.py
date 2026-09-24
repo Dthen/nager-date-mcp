@@ -22,6 +22,8 @@ import json
 import select
 import subprocess
 
+import pytest
+
 from conftest import GOLDEN, SERVER_ARGS, V2
 
 ERA = "2026-07-28"
@@ -336,6 +338,54 @@ def test_id_less_unknown_gets_no_response():
         resp = s.rpc({"jsonrpc": "2.0", "id": 99, "method": "ping"})
         assert resp["id"] == 99, \
             f"a phantom response to the id-less request corrupts correlation: {resp}"
+    finally:
+        s.close()
+
+
+@pytest.mark.parametrize(
+    "method, params",
+    [
+        ("server/discover", {}),
+        ("tools/list", {}),
+        ("tools/call", {"name": "no_such_tool", "arguments": {}}),
+        ("ping", {}),
+    ],
+)
+def test_id_less_known_method_is_silent_before_correlated_response(method, params):
+    """Every known-method notification is silent before the next correlated reply."""
+    s = Server()
+    try:
+        s.send(json.dumps({"jsonrpc": "2.0", "method": method, "params": params}))
+        resp = s.rpc({"jsonrpc": "2.0", "id": 141, "method": "ping"})
+        assert resp["id"] == 141, \
+            f"a phantom response to the {method} notification displaces correlation: {resp}"
+        assert resp["result"] == {}
+    finally:
+        s.close()
+
+
+@pytest.mark.parametrize(
+    "method, params",
+    [
+        ("server/discover", {}),
+        ("tools/list", {}),
+        ("tools/call", {"name": "no_such_tool", "arguments": {}}),
+        ("ping", {}),
+    ],
+)
+def test_explicit_null_id_known_method_receives_response(method, params):
+    """An explicit JSON-RPC id member, including null, is echoed verbatim."""
+    s = Server()
+    try:
+        resp = s.rpc({"jsonrpc": "2.0", "id": None, "method": method, "params": params})
+        assert "id" in resp
+        assert resp["id"] is None
+        if method == "tools/call":
+            text = resp["result"]["content"][0]["text"]
+            assert "no_such_tool" in text
+            assert resp["result"].get("isError") is True
+        else:
+            assert "result" in resp
     finally:
         s.close()
 
