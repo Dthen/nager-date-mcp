@@ -21,7 +21,13 @@ from nager_date_mcp import client, server, transport
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 VERSION = "0.3.0"
 ROLLBACK_TAG = "pre-migration/20260914"
-RELEASE_TAG = "v0.3.0"
+# The v0.3.0 release commit, pinned by SHA. Local release tags are deliberately not
+# kept: a tag that must name HEAD is a release freeze, not a provenance record, and it
+# fails on the first ordinary commit after a release. The release is therefore pinned
+# here, and proven by ancestry (see test_release_and_rollback_history_are_reachable).
+RELEASE_COMMIT = "b537b3243766d88c8227908c3af3762c735496fc"
+RELEASE_SUBJECT = "nager-date-mcp: require release tag at verified HEAD"
+ROLLBACK_COMMIT = "477a444f6a6f8fd738091da59f9bf202e467a2bd"
 
 
 def git(*args: str) -> str:
@@ -105,7 +111,13 @@ def test_frozen_golden_has_seven_tools_without_runtime_output_schemas():
 def test_release_and_rollback_history_are_reachable():
     head = git("rev-parse", "HEAD")
     assert git("merge-base", "--is-ancestor", ROLLBACK_TAG, head) == ""
-    assert git("rev-parse", RELEASE_TAG) == head
+    # The recorded release must still exist, still be reachable from the tip, and must
+    # descend from the rollback anchor. This proves the release/rollback relationship
+    # without freezing the tip at the release, so later commits cannot break it.
+    assert git("cat-file", "-t", RELEASE_COMMIT) == "commit"
+    assert git("merge-base", "--is-ancestor", RELEASE_COMMIT, head) == ""
+    assert git("merge-base", "--is-ancestor", ROLLBACK_TAG, RELEASE_COMMIT) == ""
+    assert git("show", "-s", "--format=%s", RELEASE_COMMIT) == RELEASE_SUBJECT
     assert int(git("rev-list", "--count", f"{ROLLBACK_TAG}..HEAD")) > 0
     assert git("show", "-s", "--format=%s", ROLLBACK_TAG) == (
         "fix: migrate to standalone fastmcp (mcp SDK 2.x dropped mcp.server.fastmcp)"
@@ -116,7 +128,8 @@ def test_local_release_tags_are_lightweight_and_ancestry_ordered():
     tags = git("for-each-ref", "--format=%(refname:short) %(objecttype)", "refs/tags")
     rows = dict(line.split() for line in tags.splitlines())
     assert rows[ROLLBACK_TAG] == "commit"
-    assert rows[RELEASE_TAG] == "commit"
-    assert git("rev-parse", ROLLBACK_TAG) == (
-        "477a444f6a6f8fd738091da59f9bf202e467a2bd"
-    )
+    # No v0.3.0 release tag is kept: a release tag that must name HEAD fails on the
+    # first commit after release. The release is pinned by SHA above instead. Asserting
+    # the tag is absent keeps the decision enforced, not merely documented.
+    assert "v0.3.0" not in rows
+    assert git("rev-parse", ROLLBACK_TAG) == ROLLBACK_COMMIT
