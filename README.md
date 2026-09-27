@@ -36,10 +36,11 @@ Zero runtime dependencies — the server is stdlib-only Python (urllib +
 newline-delimited JSON-RPC over stdio, no framework). Only a Python ≥ 3.10
 interpreter is required; nothing is fetched from PyPI at runtime.
 
-The production interpreter lives in a dedicated venv:
+The production interpreter lives in a dedicated venv. Substitute your own venv
+root for `<venv-root>`:
 
 ```bash
-/mnt/HC_Volume_105667182/kimbo/mcp-venvs/nager-date-mcp-v2/bin/python3 -m nager_date_mcp.server
+<venv-root>/nager-date-mcp-v2/bin/python3 -m nager_date_mcp.server
 ```
 
 ## Configure (Hermes)
@@ -50,7 +51,7 @@ production invocation; `-m` is kept):
 ```yaml
 mcp_servers:
   nager-date:
-    command: /mnt/HC_Volume_105667182/kimbo/mcp-venvs/nager-date-mcp-v2/bin/python3
+    command: <venv-root>/nager-date-mcp-v2/bin/python3
     args: ["-m", "nager_date_mcp.server"]
     protocol: stateless
 ```
@@ -61,7 +62,7 @@ Or for Claude Desktop / other MCP clients:
 {
   "mcpServers": {
     "nager-date": {
-      "command": "/mnt/HC_Volume_105667182/kimbo/mcp-venvs/nager-date-mcp-v2/bin/python3",
+      "command": "<venv-root>/nager-date-mcp-v2/bin/python3",
       "args": ["-m", "nager_date_mcp.server"]
     }
   }

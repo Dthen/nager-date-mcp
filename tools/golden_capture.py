@@ -7,20 +7,50 @@ One-shot real-repo act, run ONLY from the repo root (`cd $R && $PYO python3 tool
 sites (T03 conftest GOLDEN / T04 #9) are the `__file__`-derived ones.
 
 Spawn line is the production invocation per real ~/.hermes/config.yaml (read-only reference):
-    /mnt/HC_Volume_105667182/kimbo/mcp-venvs/nager-date-mcp/bin/python3 -m nager_date_mcp.server
+    <venv-root>/nager-date-mcp-v2/bin/python3 -m nager_date_mcp.server
 
 Probe sequence verified live against fastmcp 3.4.7 under $PYO (legacy mcp SDK server):
 initialize -> answered; notifications/initialized -> swallowed (no reply); tools/list ->
 7 tools, `outputSchema` present on ALL of them (the D3 trap the freeze test later strips and
 asserts absent in the new listing). EOF/kill branch: the WAIT branch fired — the server exits
 cleanly on stdin EOF (rc=0, ~0.4 s); the kill branch never runs.
+
+$PYO is the PRE-FLIP (legacy fastmcp) interpreter, deliberately NOT the v2 production venv:
+this capture tool characterizes the old server, so it gets its OWN resolver with its OWN env
+var and pointer file (PROD_PY_NAGER_DATE_OLD / .prod_py.old) rather than silently being
+repointed at v2 by the suite's PROD_PY.
 """
 import json
 import os
+import pathlib
 import select
 import subprocess
 
-PYO = "/mnt/HC_Volume_105667182/kimbo/mcp-venvs/nager-date-mcp/bin/python3"
+REPO = pathlib.Path(__file__).resolve().parents[1]
+
+
+def _old_py() -> str:
+    """Resolve the pre-flip (legacy fastmcp) interpreter path.
+
+    No sys.executable fallback: this tool must capture against the real legacy
+    interpreter, and a wrong one would silently rewrite the golden fixture from
+    a different runtime. Raises rather than defaulting for the same reason.
+    """
+    env = os.environ.get("PROD_PY_NAGER_DATE_OLD")
+    if env:
+        return env
+    local = REPO / ".prod_py.old"  # gitignored, untracked, machine-local
+    if local.is_file():
+        return local.read_text().strip()
+    raise RuntimeError(
+        "Legacy (pre-flip) interpreter not configured. Set $PROD_PY_NAGER_DATE_OLD, or write "
+        f"the path to {local} (gitignored). No sys.executable fallback: the golden fixture must "
+        "be captured from the real legacy fastmcp interpreter, not whichever interpreter ran "
+        "this script."
+    )
+
+
+PYO = _old_py()
 
 
 def read_line_with_timeout(f, sec):
