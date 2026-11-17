@@ -15,6 +15,31 @@ start an MCP session, spawn a server process or require a source checkout.
 - **Distribution:** `nager-date-mcp` 0.3.0, Python >= 3.10, zero runtime
   dependencies
 
+## Quickstart
+
+You need Git, Python 3.10 or later, and Python's `venv`/pip support. These
+commands use a POSIX shell; installation and CLI execution have been verified
+on Linux.
+
+```bash
+git clone https://github.com/Dthen/nager-date-mcp.git
+cd nager-date-mcp
+python3 -m venv .venv
+.venv/bin/python -m pip install --no-deps .
+. .venv/bin/activate
+nager-date --version
+nager-date countries --query united
+```
+
+The query needs internet access to the public holiday API; no API key or
+configuration file is needed. Installation may download build tools, but the
+installed application has no third-party runtime dependencies. This installs
+from the repository without relying on a PyPI release.
+
+Activation makes `nager-date` available in this shell. Without activation, use
+`.venv/bin/nager-date`. Run `deactivate` when finished. For command help, use
+`nager-date --help` or, for example, `nager-date holidays --help`.
+
 ## Interfaces
 
 | Operation | MCP tool | CLI command | CLI flags |
@@ -34,18 +59,14 @@ repeated value options and missing values are usage errors (status 2). A
 literal `--` ends option parsing; `--json` after it does not select JSON mode.
 `--json` repeated is harmless.
 
-`worldwide` and the MCP `get_worldwide_holidays` tool both describe
-**upcoming** holidays from the existing `NextPublicHolidaysWorldwide` v3
-endpoint, not only today's. The MCP tool description and handler docstring were
-corrected to say "upcoming"; the endpoint, tool schemas, tool names/order and
-returned data are unchanged. That wording-only change is the single delta from
-the previously frozen `tools/list` capture, and the golden records it.
+`worldwide` and the MCP `get_worldwide_holidays` tool return **upcoming**
+holidays from the `NextPublicHolidaysWorldwide` v3 endpoint, not only today's.
 
-## Install (local unpublished candidate)
+## Install from a wheel
 
-This pilot has no public PyPI release. Install the built wheel from a local
-path, fully offline: without dependency resolution or index access (the
-package has no runtime dependencies):
+If you already have a wheel, install it into a new virtual environment using
+its actual path. To create one from the repository, follow
+[Building a wheel](CONTRIBUTING.md#building-a-wheel).
 
 ```bash
 python3 -m venv .venv
@@ -53,11 +74,11 @@ python3 -m venv .venv
 .venv/bin/nager-date --version      # nager-date 0.3.0
 ```
 
-The two options are deliberate and serve different purposes: `--no-deps`
-skips runtime dependency resolution (there are no runtime dependencies), while
-`--no-index` disables package-index lookup and pip's implied version check, so
-the install resolves nothing remotely. The same wheel installs on Python 3.10
-and 3.11.
+The wheel installation is offline: `--no-deps` skips dependency resolution,
+and `--no-index` disables package-index lookup and pip's implied version check.
+Creating the virtual environment uses your local Python installation. Building
+the wheel, unlike installing an existing one, may download build tools. The
+same pure-Python wheel has been verified on Python 3.10 and 3.11.
 
 ## CLI usage
 
@@ -181,33 +202,48 @@ error pages are never dumped into CLI output.
 
 ## MCP server setup
 
-The MCP server keeps its stdio JSON-RPC interface and stateless era. Point
-clients at the installed wheel environment's interpreter:
+The MCP server uses newline-delimited JSON-RPC over stdio with protocol
+version `2026-07-28`. Your MCP client must support that stateless protocol;
+clients requiring the older `initialize` handshake are not compatible.
+
+Use the **absolute path** to the interpreter in the environment where you
+installed this package. For the quickstart environment, print it with:
+
+```bash
+.venv/bin/python -c 'import sys; print(sys.executable)'
+```
+
+Use that output for `command` below. The client launches the server itself;
+you do not need another terminal or shell activation to run it.
+
+For Hermes:
 
 ```yaml
 mcp_servers:
   nager-date:
-    command: <venv-root>/bin/python
+    command: /absolute/path/to/nager-date-mcp/.venv/bin/python
     args: ["-m", "nager_date_mcp.server"]
     protocol: stateless
 ```
+
+For other clients that use the `mcpServers` configuration shape and support
+the same protocol:
 
 ```json
 {
   "mcpServers": {
     "nager-date": {
-      "command": "<venv-root>/bin/python",
+      "command": "/absolute/path/to/nager-date-mcp/.venv/bin/python",
       "args": ["-m", "nager_date_mcp.server"]
     }
   }
 }
 ```
 
-`python -m nager_date_mcp.server` remains unchanged: one shared client,
-tolerant tool schemas, era metadata on every result, and the historical
-list-versus-`{"holidays": ..., "note": ...}` and friendly-string outcomes.
-The server reads newline-delimited JSON-RPC on stdin and writes protocol-only
-JSON on stdout.
+The server reads requests on stdin and writes protocol-only JSON on stdout.
+Tool results can be lists, objects or explanatory strings. A filtered holiday
+list with a caveat uses `{"holidays": [...], "note": "..."}`. The CLI's
+`data`/`warnings`/`error` envelope is separate from these MCP result shapes.
 
 ## Python support
 
@@ -217,17 +253,10 @@ measured extent of the floor claim, not a promise about untested versions.
 
 ## Development
 
-From the checkout, install pytest in a test environment and run:
-
-```bash
-python3 -m pip install pytest
-python3 -m pytest tests/ -v
-```
-
-Spawn-based tests require `PROD_PY` to name a distinct interpreter that
-imports this checkout (stdlib-only, no third-party runtime dependencies), or
-a gitignored `.prod_py` file containing that path. The wheel checks are
-separate from the source suite.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for a complete contributor setup,
+the separate test/runtime environments, running the suite and building a wheel.
+To report a problem, include the command, Python version, exit status and
+relevant output in a [GitHub issue](https://github.com/Dthen/nager-date-mcp/issues).
 
 ## API details
 

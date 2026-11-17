@@ -3,6 +3,10 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+.venv/
+.venv-tests/
+.venv-runtime/
+.venv-wheel/
 golden/*
 !golden/*.json
 
