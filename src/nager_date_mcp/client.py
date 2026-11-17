@@ -61,6 +61,20 @@ def _extract_error_message(response: SeamResponse) -> str:
     return raw
 
 
+class ClientStatusError(ValueError):
+    """ValueError carrying the HTTP status that produced it.
+
+    Raised for the client's 400/404 mappings. It stays a ``ValueError`` so
+    existing callers (the MCP fold) keep their exact message/type contract;
+    the ``status_code`` attribute is optional metadata for interfaces that
+    need to distinguish ``invalid_request`` from ``not_found``.
+    """
+
+    def __init__(self, message: str, status_code: int) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
 class NagerDateClient:
     """Thin wrapper around the public Nager.Date REST API.
 
@@ -81,14 +95,25 @@ class NagerDateClient:
         self,
         base_url: str = BASE_URL,
         default_ttl: int = TTL_HOUR,
+        timeout: float | None = None,
     ) -> None:
         self.base_url = base_url
         self.default_ttl = default_ttl
+        # None keeps the transport's 5.0 s default AND the historical
+        # no-override fetch call shape (no timeout keyword passed).
+        self.timeout = timeout
         # cache_key -> (timestamp, data)
         self._cache: dict[str, tuple[float, Any]] = {}
 
     def clear_cache(self) -> None:
         self._cache.clear()
+
+    def _fetch(self, url: str) -> SeamResponse:
+        """GET through the single transport seam, applying a configured
+        request timeout only when one was explicitly set."""
+        if self.timeout is None:
+            return fetch_raw(url)
+        return fetch_raw(url, timeout=self.timeout)
 
     def get(self, path: str, cache_ttl: int | None = None) -> Any:
         """GET ``path`` (relative to base URL), returning cached data when fresh.
@@ -111,7 +136,7 @@ class NagerDateClient:
 
         # Literal `base_url + path` concat — urljoin would drop the /api/v3
         # prefix (seam fact, _chain.md; transport.fetch_raw docstring).
-        response = fetch_raw(self.base_url + path)
+        response = self._fetch(self.base_url + path)
         data = self._handle_response(response)
 
         if ttl > 0:
@@ -142,11 +167,13 @@ class NagerDateClient:
                 (s for s in segments if len(s) == 2 and s.isalpha()), None
             )
             if code:
-                raise ValueError(f"Country not found: {code}")
-            raise ValueError(f"Not found: {response.request.url.path}")
+                raise ClientStatusError(f"Country not found: {code}", 404)
+            raise ClientStatusError(
+                f"Not found: {response.request.url.path}", 404
+            )
         if response.status_code == 400:
             detail = _extract_error_message(response)
-            raise ValueError(f"Bad request: {detail}")
+            raise ClientStatusError(f"Bad request: {detail}", 400)
         response.raise_for_status()
         return response.json()
 
@@ -200,7 +227,7 @@ class NagerDateClient:
         #   - None  -> 204, ambiguous (no-data OR not-a-holiday)
         # A genuine 404/400/5xx still raises via _handle_response, so callers
         # never see those collapsed into None.
-        response = fetch_raw(self.base_url + path)
+        response = self._fetch(self.base_url + path)
         if response.status_code == 200:
             return True
         if response.status_code == 204:

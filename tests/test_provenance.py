@@ -6,6 +6,7 @@ The process-level JSON-RPC regressions live in ``test_stateless_era.py``.
 """
 
 import ast
+import hashlib
 import importlib.util
 import json
 import pathlib
@@ -106,6 +107,73 @@ def test_frozen_golden_has_seven_tools_without_runtime_output_schemas():
     }
     assert len(server.TOOLS) == 7
     assert all("outputSchema" not in tool for tool in server.TOOLS)
+
+
+# P6 criterion 3: the worldwide description changes deliberately and NOTHING
+# else in tools/list moves. The hashes below are canonical-JSON SHA-256 values
+# of each tool in the frozen P6 baseline capture
+# (results/p6-baseline/golden/nager-date.tools.json in the pilot workspace).
+P6_BASELINE_TOOL_SHA256 = {
+    "get_holidays": "8fc09e45b089deed4040278256564be25328f8ca8b697d6b73fccc5b9a6a2986",
+    "get_next_holidays": "d6de333f1c907ab22cbe6c50f8755b6d1ed9696e9c5c75740e0280f1af8ab88d",
+    "get_long_weekends": "499a28ee0c3e996917d81775c9cf67ccfd1f071cc09fd0c2c22605870ae9993f",
+    "is_today_holiday": "a2435b844a73416a14b6679e0dad6e2dae35f7eca1ce866ab440e403ef9bb0d5",
+    "list_countries": "2804f2e005ef47dfbab31a6167c318c0e5ba62341e74c621038e5e91ea9b17a0",
+    "get_country_info": "84091a4fd25623bdb362bfc9e498161a66e110aeefb3ce0d659790d265f1094c",
+    "get_worldwide_holidays": "85bf00907a442bf454724cd1ec2d5fe43f4537f1eee50e559a5d4d7a3c638481",
+}
+
+OLD_WORLDWIDE_DESCRIPTION = (
+    "Get all public holidays happening today worldwide.\n\n"
+    "Returns a list of holiday objects from all countries that have\n"
+    "a public holiday today, each enriched with day_of_week."
+)
+NEW_WORLDWIDE_DESCRIPTION = (
+    "Get upcoming public holidays worldwide.\n\n"
+    "Returns a list of holiday objects from all countries with upcoming\n"
+    "public holidays, each enriched with day_of_week."
+)
+
+
+def _canonical_tool_sha256(tool: dict) -> str:
+    canonical = json.dumps(
+        tool, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def test_worldwide_description_is_the_only_tools_list_delta_from_p6_baseline():
+    golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
+    by_name = {tool["name"]: tool for tool in golden}
+    assert list(by_name) == list(P6_BASELINE_TOOL_SHA256)
+
+    for name, baseline_hash in P6_BASELINE_TOOL_SHA256.items():
+        if name == "get_worldwide_holidays":
+            continue
+        assert _canonical_tool_sha256(by_name[name]) == baseline_hash, name
+
+    worldwide = by_name["get_worldwide_holidays"]
+    assert worldwide["description"] == NEW_WORLDWIDE_DESCRIPTION
+    assert "today" not in worldwide["description"].lower()
+    reverted = dict(worldwide, description=OLD_WORLDWIDE_DESCRIPTION)
+    assert (
+        _canonical_tool_sha256(reverted)
+        == P6_BASELINE_TOOL_SHA256["get_worldwide_holidays"]
+    )
+    assert (
+        _canonical_tool_sha256(worldwide)
+        != P6_BASELINE_TOOL_SHA256["get_worldwide_holidays"]
+    )
+
+
+def test_worldwide_runtime_description_and_handler_docstring_are_upcoming():
+    by_name = {tool["name"]: tool for tool in server.TOOLS}
+    assert by_name["get_worldwide_holidays"]["description"] == (
+        NEW_WORLDWIDE_DESCRIPTION
+    )
+    docstring = server.get_worldwide_holidays.__doc__ or ""
+    assert "upcoming" in docstring.lower()
+    assert "happening today worldwide" not in docstring.lower()
 
 
 def test_release_and_rollback_history_are_reachable():

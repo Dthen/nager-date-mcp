@@ -11,6 +11,9 @@ license = {text = "0BSD"}
 requires-python = ">=3.10"
 dependencies = []
 
+[project.scripts]
+nager-date = "nager_date_mcp.cli:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest",

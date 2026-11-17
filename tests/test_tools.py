@@ -9,12 +9,27 @@ urllib.error.HTTPError); every test name and every other assertion is
 preserved 1:1 (51 -> 51). Mocks patch the module-level
 ``nager_date_mcp.server._client`` singleton's methods at the use site,
 matching T07.
+
+CLI-pilot P1 characterization additions (test-only, current behaviour pinned
+before extraction): the per-operation county asymmetry, the combined
+filter-note text/order, the worldwide-204 empty-success class, support-lookup
+failure folds, and the wire-level dispatch/content rendering for malformed
+source shapes. Nothing above this paragraph was rewritten; the protocol group
+drives `server.main()` in-process over in-memory stdio with the real handler
+path and only the low-level `client.fetch_raw` seam replaced — no sockets.
 """
 
+import io
+import json
+import sys
 import urllib.error
+from contextlib import ExitStack, redirect_stdout
 from unittest.mock import Mock, patch
 
+import pytest
+
 from nager_date_mcp.client import NagerDateClient
+from nager_date_mcp import server as server_module
 from nager_date_mcp.server import (
     _day_of_week,
     _enrich_holidays,
@@ -774,3 +789,256 @@ def test_enrich_holidays_malformed_date_does_not_crash():
     result = _enrich_holidays(holidays)
     assert result[0]["day_of_week"] == "Wednesday"
     assert result[1]["day_of_week"] is None
+
+
+# ===========================================================================
+# CLI-pilot P1 characterization (test-only; no production code changed).
+# These pin CURRENT observable MCP behaviour that the later extraction must
+# preserve. Characterization tests legitimately pass on the baseline; their
+# sensitivity was demonstrated once against a deliberately wrong expectation
+# (see results/p1-implementation.md) before locking the real values in.
+# ===========================================================================
+
+
+def _tools_call(name, arguments, rid=1):
+    """Build one tools/call request line as an object."""
+    return {
+        "jsonrpc": "2.0",
+        "id": rid,
+        "method": "tools/call",
+        "params": {"name": name, "arguments": arguments},
+    }
+
+
+def _protocol_exchange(requests, client, seam):
+    """Run ``server.main()`` in-process over in-memory stdio.
+
+    The REAL handler + dispatch loop executes (so the returned JSON-RPC object
+    is the oracle); only the low-level ``client.fetch_raw`` seam and the shared
+    ``_client`` instance are replaced. No socket is ever opened.
+    """
+    out = io.StringIO()
+    original_stdin = sys.stdin
+    sys.stdin = io.StringIO("".join(json.dumps(r) + "\n" for r in requests))
+    try:
+        with ExitStack() as stack:
+            stack.enter_context(patch("nager_date_mcp.client.fetch_raw", seam))
+            stack.enter_context(patch.object(server_module, "_client", client))
+            stack.enter_context(redirect_stdout(out))
+            server_module.main()
+    finally:
+        sys.stdin = original_stdin
+    return [json.loads(line) for line in out.getvalue().splitlines()]
+
+
+# -- county filtering asymmetry ---------------------------------------------
+# MCP holidays/next-holidays strip+uppercase the supplied county before
+# filtering; MCP is_today_holiday forwards it unchanged. Pin both halves.
+
+
+@pytest.mark.parametrize(
+    "invoke, method, payload, expected_names",
+    [
+        (
+            lambda: get_holidays("GB", year=2025, county="  gb-NIR  "),
+            "get_holidays",
+            lambda: [h.copy() for h in MOCK_HOLIDAYS],
+            {"New Year's Day", "Good Friday", "St Patrick's Day", "Valentine's Day"},
+        ),
+        (
+            lambda: get_next_holidays("GB", county="  gb-SCT  "),
+            "get_next_holidays",
+            lambda: [
+                {"date": "2026-08-01", "name": "Regional Day",
+                 "countryCode": "GB", "counties": ["GB-SCT"], "types": ["Public"]},
+                {"date": "2026-08-15", "name": "National Day",
+                 "countryCode": "GB", "counties": None, "types": ["Public"]},
+            ],
+            {"Regional Day", "National Day"},
+        ),
+    ],
+    ids=["get_holidays", "get_next_holidays"],
+)
+def test_mcp_county_filters_strip_and_upper_county(invoke, method, payload, expected_names):
+    """Lowercase/surrounding whitespace still matches after strip().upper()."""
+    with patch(f"nager_date_mcp.server._client.{method}", return_value=payload()):
+        result = invoke()
+    assert isinstance(result, list)  # a regional match adds no note
+    assert {h["name"] for h in result} == expected_names
+
+
+def test_mcp_today_check_forwards_county_verbatim():
+    """The today-check does NOT normalize the county (per-operation asymmetry):
+    the raw supplied string reaches the client kwarg unchanged."""
+    mock = Mock(return_value=None)
+    with (
+        patch("nager_date_mcp.server._client.is_today_holiday", mock),
+        patch(
+            "nager_date_mcp.server._client.get_available_countries",
+            return_value=[{"countryCode": "GB", "name": "United Kingdom"}],
+        ),
+    ):
+        result = is_today_holiday("GB", county="  gb-eng  ", offset=-5)
+    assert result == {"is_holiday": False, "country": "GB"}
+    mock.assert_called_once_with("GB", county_code="  gb-eng  ", offset=-5)
+
+
+# -- combined filter notes: order, joining and text --------------------------
+
+
+def test_get_holidays_type_then_county_notes_keep_order_and_text():
+    """Both notes present: type note first, then county note, joined by '; '."""
+    with patch(
+        "nager_date_mcp.server._client.get_holidays",
+        return_value=[h.copy() for h in MOCK_HOLIDAYS],
+    ):
+        result = get_holidays("GB", year=2025, type="school", county=" zz-nope ")
+    assert result == {
+        "holidays": [],
+        "note": (
+            "note: no holidays matched type 'school' for GB "
+            "(this country may use a different type label); "
+            "note: no regional holidays found for county 'ZZ-NOPE'; "
+            "showing national holidays only"
+        ),
+    }
+
+
+# -- endpoint-specific empty/no-data classes --------------------------------
+
+
+def test_get_worldwide_holidays_204_is_successful_empty_list():
+    """A worldwide 204 reaches _enrich_holidays as None -> []: a SUCCESSFUL
+    empty result, NOT the country-style no-data string."""
+    client, seam = _mock_204_client()
+    with patch("nager_date_mcp.client.fetch_raw", seam), patch(
+        "nager_date_mcp.server._client", client
+    ):
+        result = get_worldwide_holidays()
+    assert result == []
+
+
+@pytest.mark.parametrize(
+    "invoke, method, empty_value",
+    [
+        (lambda: get_long_weekends("US", year=2025), "get_long_weekends", []),
+        (lambda: is_today_holiday("US"), "is_today_holiday", None),
+    ],
+    ids=["get_long_weekends", "is_today_holiday"],
+)
+def test_support_lookup_failure_is_a_failure(invoke, method, empty_value):
+    """When the empty-result disambiguation lookup itself fails, the transport
+    fold applies — it must not surface as a false/no-data answer."""
+    client = NagerDateClient()
+    with (
+        patch.object(client, method, return_value=empty_value),
+        patch.object(
+            client,
+            "get_available_countries",
+            side_effect=urllib.error.URLError("lookup down"),
+        ),
+        patch("nager_date_mcp.server._client", client),
+    ):
+        result = invoke()
+    assert result == "Error: API request failed — <urlopen error lookup down>"
+
+
+# -- protocol rendering: compact Unicode content -----------------------------
+
+
+def test_protocol_content_is_compact_and_unicode_preserving():
+    """Result text is compact JSON (no spaces) with raw non-ASCII characters."""
+    body = json.dumps(
+        [{
+            "date": "2025-11-19",
+            "name": "Buß- und Bettag",
+            "localName": "Buß- und Bettag",
+            "types": ["Public"],
+        }],
+        ensure_ascii=False,
+    ).encode("utf-8")
+    client, seam = _mock_transport_client(body)
+    [resp] = _protocol_exchange(
+        [_tools_call("get_holidays", {"country": "DE", "year": 2025})], client, seam
+    )
+    assert resp["result"]["content"] == [{
+        "type": "text",
+        "text": (
+            '[{"date":"2025-11-19","name":"Buß- und Bettag",'
+            '"localName":"Buß- und Bettag","types":["Public"],'
+            '"day_of_week":"Wednesday"}]'
+        ),
+    }]
+
+
+# -- malformed source shapes: current fold/dispatch behaviour ----------------
+
+
+def test_protocol_null_types_field_raises_dispatch_error():
+    """A null ``types`` field makes the type filter raise TypeError, which the
+    dispatch guard renders as -32603 (NOT a friendly fold string)."""
+    body = json.dumps([{"date": "2025-01-01", "types": None}]).encode("utf-8")
+    client, seam = _mock_transport_client(body)
+    [resp] = _protocol_exchange(
+        [_tools_call("get_holidays", {"country": "GB", "year": 2025, "type": "Public"})],
+        client,
+        seam,
+    )
+    assert "result" not in resp
+    assert resp["error"] == {
+        "code": -32603,
+        "message": "'NoneType' object is not iterable",
+    }
+
+
+def test_protocol_object_body_with_date_key_is_dispatch_error():
+    """An object in place of a holiday list is iterated by key; a 'date' key
+    reaches enrichment as a str and item assignment raises -> -32603."""
+    body = b'{"date":"2025-01-01","name":"Oops"}'
+    client, seam = _mock_transport_client(body)
+    [resp] = _protocol_exchange(
+        [_tools_call("get_holidays", {"country": "GB", "year": 2025})], client, seam
+    )
+    assert "result" not in resp
+    assert resp["error"] == {
+        "code": -32603,
+        "message": "'str' object does not support item assignment",
+    }
+
+
+def test_protocol_object_body_without_date_key_passes_through_as_success():
+    """Without a 'date' key the same malformed object is enshrined as a
+    SUCCESS text object — the MCP layer performs no result-shape check, which
+    is why the CLI must own that check at its result boundary."""
+    body = b'{"name":"Oops"}'
+    client, seam = _mock_transport_client(body)
+    [resp] = _protocol_exchange(
+        [_tools_call("get_holidays", {"country": "GB", "year": 2025})], client, seam
+    )
+    assert resp["result"]["content"] == [{"type": "text", "text": '{"name":"Oops"}'}]
+    assert resp["result"].get("isError") is not True
+
+
+def test_protocol_country_info_204_renders_null_success():
+    """A missing/non-object country-info result (204 -> None) is currently a
+    literal 'null' SUCCESS text; the CLI must classify it invalid_response."""
+    client, seam = _mock_204_client()
+    [resp] = _protocol_exchange(
+        [_tools_call("get_country_info", {"country": "ZZ"})], client, seam
+    )
+    assert resp["result"]["content"] == [{"type": "text", "text": "null"}]
+    assert resp["result"].get("isError") is not True
+
+
+def test_protocol_non_collection_countries_is_dispatch_error():
+    """An unusable countries collection (null) raises at iteration -> -32603."""
+    body = b"null"
+    client, seam = _mock_transport_client(body)
+    [resp] = _protocol_exchange(
+        [_tools_call("list_countries", {})], client, seam
+    )
+    assert "result" not in resp
+    assert resp["error"] == {
+        "code": -32603,
+        "message": "'NoneType' object is not iterable",
+    }

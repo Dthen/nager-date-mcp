@@ -362,7 +362,7 @@
   },
   {
     "name": "get_worldwide_holidays",
-    "description": "Get all public holidays happening today worldwide.\n\nReturns a list of holiday objects from all countries that have\na public holiday today, each enriched with day_of_week.",
+    "description": "Get upcoming public holidays worldwide.\n\nReturns a list of holiday objects from all countries with upcoming\npublic holidays, each enriched with day_of_week.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {},

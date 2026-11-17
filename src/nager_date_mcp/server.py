@@ -8,9 +8,13 @@ logs/notes go to stderr.
 import json
 import sys
 import urllib.error
-from datetime import date, datetime
 
 from nager_date_mcp.client import NagerDateClient
+from nager_date_mcp import operations
+from nager_date_mcp.operations import (
+    _day_of_week,
+    _enrich_holidays,
+)
 
 if hasattr(sys.stdin, "reconfigure"):            # binary/undecodable bytes must not kill the loop
     sys.stdin.reconfigure(errors="replace")      # invalid UTF-8 → U+FFFD → lands in the json.loads except
@@ -35,33 +39,8 @@ def era_result(payload):
     return out
 
 
-def _day_of_week(date_str: str) -> str:
-    """Compute the weekday name (e.g. 'Monday') from an ISO date string."""
-    d = datetime.strptime(date_str, "%Y-%m-%d").date()
-    return d.strftime("%A")
-
-
-def _enrich_holidays(holidays: list[dict] | None) -> list[dict]:
-    """Add a 'day_of_week' field to each holiday dict.
-
-    Defensive: a None or empty input (e.g. the API returned 204 No Content
-    for an unsupported country) yields an empty list rather than raising.
-    """
-    if not holidays:
-        return []
-    for h in holidays:
-        if "date" in h:
-            try:
-                h["day_of_week"] = _day_of_week(h["date"])
-            except (ValueError, TypeError):
-                # A single malformed/missing date must not sink the whole
-                # response — mark it None and keep the good records.
-                h["day_of_week"] = None
-    return holidays
-
-
 # Byte-frozen from golden/nager-date.tools.json (T00). outputSchema deliberately ABSENT — PLAN D3 / REFERENCE §4.
-TOOLS: list[dict] = [{'name': 'get_holidays', 'description': 'Get all public holidays for a country in a given year.', 'inputSchema': {'additionalProperties': False, 'properties': {'country': {'type': 'string', 'description': 'ISO 3166-1 alpha-2 country code (e.g. "US", "GB", "DE").'}, 'year': {'anyOf': [{'type': 'integer'}, {'type': 'null'}], 'default': None, 'description': 'Year to query (1976–2076). Defaults to the current year.'}, 'type': {'anyOf': [{'type': 'string'}, {'type': 'null'}], 'default': None, 'description': 'Filter by holiday type (e.g. "Public", "Bank", "Observance"). Case-insensitive.'}, 'county': {'anyOf': [{'type': 'string'}, {'type': 'null'}], 'default': None, 'description': 'Filter by ISO 3166-2 subdivision code (e.g. "GB-ENG", "US-CA").'}}, 'required': ['country'], 'type': 'object'}}, {'name': 'get_next_holidays', 'description': 'Get the upcoming public holidays for a country (from today forward).', 'inputSchema': {'additionalProperties': False, 'properties': {'country': {'type': 'string', 'description': 'ISO 3166-1 alpha-2 country code (e.g. "US", "GB", "JP").'}, 'county': {'anyOf': [{'type': 'string'}, {'type': 'null'}], 'default': None, 'description': 'Optional ISO 3166-2 subdivision code to filter regional holidays.'}}, 'required': ['country'], 'type': 'object'}}, {'name': 'get_long_weekends', 'description': 'Get all long weekends for a country in a given year.\n\nA long weekend occurs when a holiday falls adjacent to a weekend,\ncreating an extended break. Includes bridge-day information.', 'inputSchema': {'additionalProperties': False, 'properties': {'country': {'type': 'string', 'description': 'ISO 3166-1 alpha-2 country code (e.g. "US", "GB").'}, 'year': {'anyOf': [{'type': 'integer'}, {'type': 'null'}], 'default': None, 'description': 'Year to query (1976–2076). Defaults to the current year.'}}, 'required': ['country'], 'type': 'object'}}, {'name': 'is_today_holiday', 'description': 'Check whether today is a public holiday in a given country.', 'inputSchema': {'additionalProperties': False, 'properties': {'country': {'type': 'string', 'description': 'ISO 3166-1 alpha-2 country code (e.g. "US", "PE").'}, 'county': {'anyOf': [{'type': 'string'}, {'type': 'null'}], 'default': None, 'description': 'Optional ISO 3166-2 subdivision code for regional check.'}, 'offset': {'anyOf': [{'type': 'integer'}, {'type': 'null'}], 'default': None, 'description': "UTC timezone offset for determining 'today', e.g. -5 for\nUS Eastern. Defaults to UTC."}}, 'required': ['country'], 'type': 'object'}}, {'name': 'list_countries', 'description': 'List countries supported by the Nager.Date holiday API.', 'inputSchema': {'additionalProperties': False, 'properties': {'query': {'anyOf': [{'type': 'string'}, {'type': 'null'}], 'default': None, 'description': 'Optional case-insensitive substring to filter by country name\nor code (e.g. "united", "US"). Omit to return all 200+ countries.'}}, 'type': 'object'}}, {'name': 'get_country_info', 'description': 'Get detailed information about a country including its region and borders.', 'inputSchema': {'additionalProperties': False, 'properties': {'country': {'type': 'string', 'description': 'ISO 3166-1 alpha-2 country code (e.g. "GB", "DE").'}}, 'required': ['country'], 'type': 'object'}}, {'name': 'get_worldwide_holidays', 'description': 'Get all public holidays happening today worldwide.\n\nReturns a list of holiday objects from all countries that have\na public holiday today, each enriched with day_of_week.', 'inputSchema': {'additionalProperties': False, 'properties': {}, 'type': 'object'}}]
+TOOLS: list[dict] = [{'name': 'get_holidays', 'description': 'Get all public holidays for a country in a given year.', 'inputSchema': {'additionalProperties': False, 'properties': {'country': {'type': 'string', 'description': 'ISO 3166-1 alpha-2 country code (e.g. "US", "GB", "DE").'}, 'year': {'anyOf': [{'type': 'integer'}, {'type': 'null'}], 'default': None, 'description': 'Year to query (1976–2076). Defaults to the current year.'}, 'type': {'anyOf': [{'type': 'string'}, {'type': 'null'}], 'default': None, 'description': 'Filter by holiday type (e.g. "Public", "Bank", "Observance"). Case-insensitive.'}, 'county': {'anyOf': [{'type': 'string'}, {'type': 'null'}], 'default': None, 'description': 'Filter by ISO 3166-2 subdivision code (e.g. "GB-ENG", "US-CA").'}}, 'required': ['country'], 'type': 'object'}}, {'name': 'get_next_holidays', 'description': 'Get the upcoming public holidays for a country (from today forward).', 'inputSchema': {'additionalProperties': False, 'properties': {'country': {'type': 'string', 'description': 'ISO 3166-1 alpha-2 country code (e.g. "US", "GB", "JP").'}, 'county': {'anyOf': [{'type': 'string'}, {'type': 'null'}], 'default': None, 'description': 'Optional ISO 3166-2 subdivision code to filter regional holidays.'}}, 'required': ['country'], 'type': 'object'}}, {'name': 'get_long_weekends', 'description': 'Get all long weekends for a country in a given year.\n\nA long weekend occurs when a holiday falls adjacent to a weekend,\ncreating an extended break. Includes bridge-day information.', 'inputSchema': {'additionalProperties': False, 'properties': {'country': {'type': 'string', 'description': 'ISO 3166-1 alpha-2 country code (e.g. "US", "GB").'}, 'year': {'anyOf': [{'type': 'integer'}, {'type': 'null'}], 'default': None, 'description': 'Year to query (1976–2076). Defaults to the current year.'}}, 'required': ['country'], 'type': 'object'}}, {'name': 'is_today_holiday', 'description': 'Check whether today is a public holiday in a given country.', 'inputSchema': {'additionalProperties': False, 'properties': {'country': {'type': 'string', 'description': 'ISO 3166-1 alpha-2 country code (e.g. "US", "PE").'}, 'county': {'anyOf': [{'type': 'string'}, {'type': 'null'}], 'default': None, 'description': 'Optional ISO 3166-2 subdivision code for regional check.'}, 'offset': {'anyOf': [{'type': 'integer'}, {'type': 'null'}], 'default': None, 'description': "UTC timezone offset for determining 'today', e.g. -5 for\nUS Eastern. Defaults to UTC."}}, 'required': ['country'], 'type': 'object'}}, {'name': 'list_countries', 'description': 'List countries supported by the Nager.Date holiday API.', 'inputSchema': {'additionalProperties': False, 'properties': {'query': {'anyOf': [{'type': 'string'}, {'type': 'null'}], 'default': None, 'description': 'Optional case-insensitive substring to filter by country name\nor code (e.g. "united", "US"). Omit to return all 200+ countries.'}}, 'type': 'object'}}, {'name': 'get_country_info', 'description': 'Get detailed information about a country including its region and borders.', 'inputSchema': {'additionalProperties': False, 'properties': {'country': {'type': 'string', 'description': 'ISO 3166-1 alpha-2 country code (e.g. "GB", "DE").'}}, 'required': ['country'], 'type': 'object'}}, {'name': 'get_worldwide_holidays', 'description': 'Get upcoming public holidays worldwide.\n\nReturns a list of holiday objects from all countries with upcoming\npublic holidays, each enriched with day_of_week.', 'inputSchema': {'additionalProperties': False, 'properties': {}, 'type': 'object'}}]
 
 
 # ---------------------------------------------------------------------------
@@ -93,67 +72,61 @@ def get_holidays(
     {"holidays": [...], "note": "..."} explaining why. For a country the API
     has no data for, returns a friendly message string.
     """
-    try:
-        code = country.strip().upper()
-        y = year if year is not None else date.today().year
-        holidays = _client.get_holidays(y, code)
+    outcome = operations.get_holidays(_client, country, year, type, county)
+    failure = outcome.failure
+    if failure is not None:
+        return _fold_failure(failure)
+    if outcome.warnings:
+        return {
+            "holidays": outcome.data,
+            "note": _warning_note(outcome.warnings),
+        }
+    return outcome.data
 
-        # The API returns 204 No Content (mapped to None) for valid-format
-        # country codes it has no data for (e.g. IN, SA, AE, TH). Handle
-        # gracefully instead of crashing.
-        if holidays is None:
-            return f"No holiday data available for {code}."
 
-        note: str | None = None
+def _fold_failure(failure):
+    """Fold an operation failure into the historical MCP outward shapes.
 
-        if type is not None:
-            type_lower = type.lower()
-            filtered = [
-                h
-                for h in holidays
-                if any(type_lower == t.lower() for t in h.get("types", []))
-            ]
-            if not filtered and holidays:
-                note = (
-                    f"note: no holidays matched type '{type}' for {code} "
-                    f"(this country may use a different type label)"
-                )
-            holidays = filtered
+    no_data owns the friendly sentence; ValueError keeps its ``Error:`` text;
+    typed transport failures become the API-request-failed string; anything
+    else is re-raised unchanged for the -32603 dispatch guard.
+    """
+    if failure.code == "no_data":
+        return (
+            "No holiday data available for "
+            f"{failure.details.get('country', '')}."
+        )
+    cause = failure.cause
+    if cause is None:
+        return failure.message
+    if isinstance(cause, ValueError):
+        return f"Error: {cause}"
+    if isinstance(cause, (urllib.error.URLError, OSError, TimeoutError)):
+        # R2 parity: legacy httpx.HTTPError fold. URLError ⊂ OSError and
+        # py3.11 TimeoutError ⊂ OSError, but TimeoutError is NOT a URLError;
+        # the tuple guards the seam-miss case.
+        return f"Error: API request failed — {cause}"
+    # Non-foldable failures (e.g. the historical TypeError on malformed
+    # payloads) surface unchanged at the -32603 dispatch guard.
+    raise cause
 
-        if county is not None:
-            county_upper = county.strip().upper()
-            filtered = [
-                h
-                for h in holidays
-                if h.get("global")
-                or not h.get("counties")
-                or county_upper in h["counties"]
-            ]
-            # Warn if the county matched no regional holiday (only globals
-            # survived) — a typo'd county otherwise looks like a full answer.
-            regional_match = any(
-                county_upper in (h.get("counties") or []) for h in filtered
+
+def _warning_note(warnings) -> str:
+    """Render operation warnings as the historical MCP note string."""
+    parts: list[str] = []
+    for warning in warnings:
+        if warning.code == operations.TYPE_NO_MATCHES:
+            parts.append(
+                f"note: no holidays matched type '{warning.details['type']}' "
+                f"for {warning.details['country']} "
+                f"(this country may use a different type label)"
             )
-            if not regional_match:
-                county_note = (
-                    f"note: no regional holidays found for county '{county_upper}'; "
-                    f"showing national holidays only"
-                )
-                note = f"{note}; {county_note}" if note else county_note
-            holidays = filtered
-
-        enriched = _enrich_holidays(holidays)
-        if note is not None:
-            return {"holidays": enriched, "note": note}
-        return enriched
-    except ValueError as e:
-        return f"Error: {e}"
-    except (urllib.error.URLError, OSError, TimeoutError) as e:
-        # R2 parity: legacy httpx.HTTPError fold, tag-verified git show pre-migration/20260914 src/nager_date_mcp/server.py:124-126
-        # Tuple per card T07 §1: URLError ⊂ OSError and py3.11 TimeoutError ⊂ OSError, but TimeoutError
-        # is NOT a URLError (REFERENCE §5 client-port note) — the tuple guards the seam-miss case; the
-        # transport.py seam (TRANSPORT_ERRORS) already normalizes to URLError (R2 fact 4).
-        return f"Error: API request failed — {e}"
+        elif warning.code == operations.COUNTY_NATIONAL_ONLY:
+            parts.append(
+                f"note: no regional holidays found for county "
+                f"'{warning.details['county']}'; showing national holidays only"
+            )
+    return "; ".join(parts)
 
 
 def get_next_holidays(
@@ -171,48 +144,12 @@ def get_next_holidays(
     returns a dict {"holidays": [...], "note": "..."} explaining why — mirroring
     get_holidays' convention.
     """
-    try:
-        code = country.strip().upper()
-        holidays = _client.get_next_holidays(code)
-
-        # 204 No Content (mapped to None) for unsupported countries.
-        if holidays is None:
-            return f"No holiday data available for {code}."
-
-        note: str | None = None
-
-        if county is not None:
-            county_upper = county.strip().upper()
-            holidays = [
-                h
-                for h in holidays
-                if h.get("global")
-                or not h.get("counties")
-                or county_upper in h["counties"]
-            ]
-            # Warn if the county matched no regional holiday (only globals
-            # survived) — a typo'd county otherwise looks like a full answer.
-            regional_match = any(
-                county_upper in (h.get("counties") or []) for h in holidays
-            )
-            if not regional_match:
-                note = (
-                    f"note: no regional holidays found for county '{county_upper}'; "
-                    f"showing national holidays only"
-                )
-
-        enriched = _enrich_holidays(holidays)
-        if note is not None:
-            return {"holidays": enriched, "note": note}
-        return enriched
-    except ValueError as e:
-        return f"Error: {e}"
-    except (urllib.error.URLError, OSError, TimeoutError) as e:
-        # R2 parity: legacy httpx.HTTPError fold, tag-verified git show pre-migration/20260914 src/nager_date_mcp/server.py:180-182
-        # Tuple per card T07 §1: URLError ⊂ OSError and py3.11 TimeoutError ⊂ OSError, but TimeoutError
-        # is NOT a URLError (REFERENCE §5 client-port note) — the tuple guards the seam-miss case; the
-        # transport.py seam (TRANSPORT_ERRORS) already normalizes to URLError (R2 fact 4).
-        return f"Error: API request failed — {e}"
+    outcome = operations.get_next_holidays(_client, country, county)
+    if outcome.failure is not None:
+        return _fold_failure(outcome.failure)
+    if outcome.warnings:
+        return {"holidays": outcome.data, "note": _warning_note(outcome.warnings)}
+    return outcome.data
 
 
 # ---------------------------------------------------------------------------
@@ -237,38 +174,10 @@ def get_long_weekends(
     dayCount, needBridgeDay, and bridgeDays fields. For a country the API
     has no data for, returns a friendly message string.
     """
-    try:
-        code = country.strip().upper()
-        y = year if year is not None else date.today().year
-        long_weekends = _client.get_long_weekends(y, code)
-
-        # No-data handling, kept consistent with get_holidays /
-        # get_next_holidays. Unlike those endpoints (which return 204 -> None
-        # for unsupported countries), the LongWeekend endpoint returns 200 with
-        # an EMPTY list for the same unsupported codes (IN, SA, TH, ...). So we
-        # treat None as no-data AND, for an empty result, confirm the country is
-        # actually supported before returning a bare []. A genuinely empty list
-        # for a supported country (no long weekends that year) is returned as-is.
-        if long_weekends is None:
-            return f"No holiday data available for {code}."
-
-        if not long_weekends:
-            supported = {
-                c["countryCode"]
-                for c in _client.get_available_countries()
-            }
-            if code not in supported:
-                return f"No holiday data available for {code}."
-
-        return long_weekends
-    except ValueError as e:
-        return f"Error: {e}"
-    except (urllib.error.URLError, OSError, TimeoutError) as e:
-        # R2 parity: legacy httpx.HTTPError fold, tag-verified git show pre-migration/20260914 src/nager_date_mcp/server.py:233-235
-        # Tuple per card T07 §1: URLError ⊂ OSError and py3.11 TimeoutError ⊂ OSError, but TimeoutError
-        # is NOT a URLError (REFERENCE §5 client-port note) — the tuple guards the seam-miss case; the
-        # transport.py seam (TRANSPORT_ERRORS) already normalizes to URLError (R2 fact 4).
-        return f"Error: API request failed — {e}"
+    outcome = operations.get_long_weekends(_client, country, year)
+    if outcome.failure is not None:
+        return _fold_failure(outcome.failure)
+    return outcome.data
 
 
 def is_today_holiday(
@@ -288,38 +197,10 @@ def is_today_holiday(
     API has no data for, returns a friendly message string (consistent with the
     other tools) rather than a misleading "is_holiday: false".
     """
-    try:
-        code = country.strip().upper()
-        result = _client.is_today_holiday(code, county_code=county, offset=offset)
-
-        # 200 -> today is a holiday.
-        if result is True:
-            return {"is_holiday": True, "country": code}
-
-        # 204 is ambiguous: the API returns it both for an unsupported country
-        # (no data) and for a supported country where today isn't a holiday.
-        # Disambiguate against the cached supported-countries list — mirroring
-        # get_long_weekends — so we never report a bare "not a holiday" for a
-        # country the API simply has no data for.
-        if result is None:
-            supported = {
-                c["countryCode"]
-                for c in _client.get_available_countries()
-            }
-            if code not in supported:
-                return f"No holiday data available for {code}."
-            return {"is_holiday": False, "country": code}
-
-        # Defensive fallback (client only returns True or None today).
-        return {"is_holiday": False, "country": code}
-    except ValueError as e:
-        return f"Error: {e}"
-    except (urllib.error.URLError, OSError, TimeoutError) as e:
-        # R2 parity: legacy httpx.HTTPError fold, tag-verified git show pre-migration/20260914 src/nager_date_mcp/server.py:281-283
-        # Tuple per card T07 §1: URLError ⊂ OSError and py3.11 TimeoutError ⊂ OSError, but TimeoutError
-        # is NOT a URLError (REFERENCE §5 client-port note) — the tuple guards the seam-miss case; the
-        # transport.py seam (TRANSPORT_ERRORS) already normalizes to URLError (R2 fact 4).
-        return f"Error: API request failed — {e}"
+    outcome = operations.is_today_holiday(_client, country, county, offset)
+    if outcome.failure is not None:
+        return _fold_failure(outcome.failure)
+    return outcome.data
 
 
 # ---------------------------------------------------------------------------
@@ -337,26 +218,10 @@ def list_countries(query: str | None = None) -> list[dict] | str:
     Returns a list of {code, name} objects. Use the code values with other
     tools like get_holidays.
     """
-    try:
-        countries = _client.get_available_countries()
-        mapped = [{"code": c["countryCode"], "name": c["name"]} for c in countries]
-        if query is not None:
-            q = query.strip().lower()
-            if q:
-                mapped = [
-                    c
-                    for c in mapped
-                    if q in c["name"].lower() or q in c["code"].lower()
-                ]
-        return mapped
-    except ValueError as e:
-        return f"Error: {e}"
-    except (urllib.error.URLError, OSError, TimeoutError) as e:
-        # R2 parity: legacy httpx.HTTPError fold, tag-verified git show pre-migration/20260914 src/nager_date_mcp/server.py:315-317
-        # Tuple per card T07 §1: URLError ⊂ OSError and py3.11 TimeoutError ⊂ OSError, but TimeoutError
-        # is NOT a URLError (REFERENCE §5 client-port note) — the tuple guards the seam-miss case; the
-        # transport.py seam (TRANSPORT_ERRORS) already normalizes to URLError (R2 fact 4).
-        return f"Error: API request failed — {e}"
+    outcome = operations.list_countries(_client, query)
+    if outcome.failure is not None:
+        return _fold_failure(outcome.failure)
+    return outcome.data
 
 
 def get_country_info(country: str) -> dict | str:
@@ -368,36 +233,22 @@ def get_country_info(country: str) -> dict | str:
     Returns country metadata: commonName, officialName, region, and
     a list of bordering countries.
     """
-    try:
-        code = country.strip().upper()
-        return _client.get_country_info(code)
-    except ValueError as e:
-        return f"Error: {e}"
-    except (urllib.error.URLError, OSError, TimeoutError) as e:
-        # R2 parity: legacy httpx.HTTPError fold, tag-verified git show pre-migration/20260914 src/nager_date_mcp/server.py:334-336
-        # Tuple per card T07 §1: URLError ⊂ OSError and py3.11 TimeoutError ⊂ OSError, but TimeoutError
-        # is NOT a URLError (REFERENCE §5 client-port note) — the tuple guards the seam-miss case; the
-        # transport.py seam (TRANSPORT_ERRORS) already normalizes to URLError (R2 fact 4).
-        return f"Error: API request failed — {e}"
+    outcome = operations.get_country_info(_client, country)
+    if outcome.failure is not None:
+        return _fold_failure(outcome.failure)
+    return outcome.data
 
 
 def get_worldwide_holidays() -> list[dict] | str:
-    """Get all public holidays happening today worldwide.
+    """Get upcoming public holidays worldwide.
 
-    Returns a list of holiday objects from all countries that have
-    a public holiday today, each enriched with day_of_week.
+    Returns a list of holiday objects from all countries with upcoming
+    public holidays, each enriched with day_of_week.
     """
-    try:
-        holidays = _client.get_worldwide_holidays()
-        return _enrich_holidays(holidays)
-    except ValueError as e:
-        return f"Error: {e}"
-    except (urllib.error.URLError, OSError, TimeoutError) as e:
-        # R2 parity: legacy httpx.HTTPError fold, tag-verified git show pre-migration/20260914 src/nager_date_mcp/server.py:350-352
-        # Tuple per card T07 §1: URLError ⊂ OSError and py3.11 TimeoutError ⊂ OSError, but TimeoutError
-        # is NOT a URLError (REFERENCE §5 client-port note) — the tuple guards the seam-miss case; the
-        # transport.py seam (TRANSPORT_ERRORS) already normalizes to URLError (R2 fact 4).
-        return f"Error: API request failed — {e}"
+    outcome = operations.get_worldwide_holidays(_client)
+    if outcome.failure is not None:
+        return _fold_failure(outcome.failure)
+    return outcome.data
 
 
 # Single dispatch table (name -> handler); the 7 functions above mirror the
