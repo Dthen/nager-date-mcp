@@ -10,9 +10,12 @@ from __future__ import annotations
 import io
 import json
 import os
+import socket
+import ssl
 import subprocess
 import sys
 import urllib.error
+import urllib.request
 from datetime import date
 from email.message import Message
 from pathlib import Path
@@ -28,6 +31,7 @@ from nager_date_mcp.transport import SeamResponse
 REPO = Path(__file__).resolve().parents[1]
 BASE_URL = "https://date.nager.at/api/v3"
 _MISSING = object()  # sentinel: the key is absent, not JSON null
+_TIMEOUT_OMITTED = object()  # sentinel: fetch_raw got no timeout keyword
 
 HOLIDAYS = [
     {
@@ -56,13 +60,19 @@ HOLIDAYS = [
 
 
 class FakeSeam:
-    """Queue of seam responses/exceptions, recording (url, timeout)."""
+    """Queue of seam responses/exceptions, recording (url, timeout).
+
+    The timeout slot keeps keyword *presence*: ``_TIMEOUT_OMITTED`` means the
+    product called ``fetch_raw(url)``, while an explicit ``None`` means it
+    passed ``timeout=None`` (which urllib reads as "no timeout" instead of
+    the transport's 5 s default). The two must not collapse into one value.
+    """
 
     def __init__(self, *responses) -> None:
         self.responses = list(responses)
-        self.calls: list[tuple[str, float | None]] = []
+        self.calls: list[tuple[str, object]] = []
 
-    def __call__(self, url: str, timeout=None) -> SeamResponse:
+    def __call__(self, url: str, timeout=_TIMEOUT_OMITTED) -> SeamResponse:
         self.calls.append((url, timeout))
         item = self.responses[min(len(self.calls) - 1, len(self.responses) - 1)]
         if isinstance(item, BaseException):
@@ -415,7 +425,7 @@ def test_json_success_shape_fields_and_unicode(capsys, install):
     assert holiday["launchYear"] is None
     assert list(holiday)[-1] == "day_of_week"
     # Same positional client path as MCP, uppercased, default transport timeout.
-    assert fake.calls == [(BASE_URL + "/PublicHolidays/2025/DE", None)]
+    assert fake.calls == [(BASE_URL + "/PublicHolidays/2025/DE", _TIMEOUT_OMITTED)]
 
 
 def test_json_empty_result_is_success(capsys, install):
@@ -433,6 +443,27 @@ def test_timeout_option_reaches_transport(capsys, install):
     assert run(["--json", "holidays", "GB", "--timeout", "2.5"]) == 0
     capsys.readouterr()
     assert fake.calls[0][1] == 2.5
+
+
+def test_default_timeout_keyword_is_omitted_not_passed_as_none(capsys, install):
+    """Default calls must omit the keyword; a configured timeout passes it.
+
+    The transport's 5 s default applies only when ``fetch_raw`` receives no
+    timeout argument. ``fetch_raw(url, timeout=None)`` disables that budget,
+    so the seam has to preserve keyword presence, not just its value.
+    """
+    fake = install(seam(text="[]"), seam(text="[]"))
+
+    assert run(["--json", "holidays", "GB", "--year", "2025"]) == 0
+    capsys.readouterr()
+    assert (
+        run(["--json", "holidays", "GB", "--year", "2025", "--timeout", "2.5"])
+        == 0
+    )
+    capsys.readouterr()
+
+    url = BASE_URL + "/PublicHolidays/2025/GB"
+    assert fake.calls == [(url, _TIMEOUT_OMITTED), (url, 2.5)]
 
 
 def test_type_warning_json(capsys, install):
@@ -603,6 +634,144 @@ def test_typed_failure_human_stdout_empty_stderr_has_code(capsys, install):
     assert out == ""
     assert "not_found" in err
     assert "Country not found: ZZ" in err
+
+
+# -- network diagnostics: safe reason kept, HTML still summarised ----------
+
+
+class _BodyReadTimeout:
+    """urlopen result whose headers arrived but whose body read times out."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def read(self):
+        raise TimeoutError("read timed out")
+
+    def getcode(self):
+        return 200
+
+
+NETWORK_FAILURES = [
+    (
+        urllib.error.URLError("Temporary failure in name resolution"),
+        "network_error",
+        "Temporary failure in name resolution",
+    ),
+    (
+        urllib.error.URLError(socket.gaierror(-2, "Name or service not known")),
+        "network_error",
+        "[Errno -2] Name or service not known",
+    ),
+    (
+        urllib.error.URLError(ConnectionRefusedError(111, "Connection refused")),
+        "network_error",
+        "Connection refused",
+    ),
+    (
+        urllib.error.URLError(ssl.SSLError("EOF occurred in violation of protocol")),
+        "network_error",
+        "EOF occurred in violation of protocol",
+    ),
+    (
+        urllib.error.URLError(TimeoutError("timed out")),
+        "timeout",
+        "Request timed out.",
+    ),
+    (
+        _BodyReadTimeout(),
+        "timeout",
+        "Request timed out.",
+    ),
+    (
+        urllib.error.URLError("<html><body>Proxy denied</body></html>"),
+        "network_error",
+        "the server returned an HTML error page",
+    ),
+]
+
+NETWORK_FAILURE_IDS = [
+    "dns-text",
+    "dns-gaierror",
+    "refused",
+    "tls-eof",
+    "connect-timeout",
+    "body-read-timeout",
+    "html-reason",
+]
+
+
+@pytest.fixture
+def urlopen_failure(monkeypatch):
+    """Inject at ``urllib.request.urlopen``, the real production path.
+
+    urlopen raises ``URLError(<reason>)`` for connection failures;
+    ``transport.fetch_raw`` catches that (``URLError`` is an ``OSError``) and
+    wraps it again, so the CLI actually receives ``URLError(URLError(reason))``.
+    Faking at ``client.fetch_raw`` would skip that transport normalisation.
+    """
+
+    def _install(failure):
+        def fake_urlopen(request, timeout=None):
+            if isinstance(failure, BaseException):
+                raise failure
+            return failure
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    return _install
+
+
+@pytest.mark.parametrize(
+    "failure, expected_code, expected",
+    NETWORK_FAILURES,
+    ids=NETWORK_FAILURE_IDS,
+)
+@pytest.mark.parametrize("json_mode", [True, False], ids=["json", "human"])
+def test_network_failure_through_real_transport(
+    failure, expected_code, expected, json_mode, capsys, urlopen_failure
+):
+    """Safe diagnostics survive the real transport/client/CLI composition."""
+    urlopen_failure(failure)
+    argv = ["holidays", "GB", "--year", "2025"]
+    if json_mode:
+        argv.insert(0, "--json")
+
+    assert run(argv) == 1
+    out, err = capsys.readouterr()
+    assert "Proxy denied" not in out + err
+    assert "<urlopen error" not in out + err
+    if json_mode:
+        assert err == ""
+        error = json.loads(out)["error"]
+        assert error["code"] == expected_code
+        message = error["message"]
+        assert len(message) <= 303  # 300-character cap plus "..."
+    else:
+        assert out == ""
+        assert f"error: {expected_code}:" in err
+        message = err.strip()
+    assert expected in message
+    assert message == " ".join(message.split())  # bounded form: collapsed
+    if expected != "the server returned an HTML error page":
+        assert "HTML error page" not in message
+
+
+def test_url_error_html_reason_is_still_summarised(capsys, install):
+    """A genuine HTML document inside a URLError reason stays sanitised."""
+    install(urllib.error.URLError("<html><body>Proxy denied</body></html>"))
+
+    assert run(["--json", "holidays", "GB"]) == 1
+    obj, out, err = json_out(capsys)
+    assert err == ""
+    assert obj["error"] == {
+        "code": "network_error",
+        "message": "the server returned an HTML error page",
+    }
+    assert "Proxy denied" not in out
 
 
 # -- P6: friendly HTTP error text without an orphan colon -------------------
@@ -1830,7 +1999,7 @@ def test_next_holidays_json_success_enriches_and_filters_county(capsys, install)
     assert obj["warnings"] == []
     assert [h["name"] for h in obj["data"]] == ["Regional Day", "National Day"]
     assert [h["day_of_week"] for h in obj["data"]] == ["Saturday", "Saturday"]
-    assert fake.calls == [(BASE_URL + "/NextPublicHolidays/GB", None)]
+    assert fake.calls == [(BASE_URL + "/NextPublicHolidays/GB", _TIMEOUT_OMITTED)]
 
 
 def test_next_holidays_county_miss_warns_on_stderr_with_code(capsys, install):
@@ -1905,7 +2074,7 @@ def test_long_weekends_json_success_retains_upstream_fields(capsys, install):
     obj, _, err = json_out(capsys)
     assert err == ""
     assert obj["data"] == LONG_RECORDS
-    assert fake.calls == [(BASE_URL + "/LongWeekend/2026/GB", None)]
+    assert fake.calls == [(BASE_URL + "/LongWeekend/2026/GB", _TIMEOUT_OMITTED)]
 
 
 def test_long_weekends_supported_empty_is_success_with_support_lookup(capsys, install):
@@ -1972,7 +2141,7 @@ def test_long_weekends_default_year_uses_host_local_call_time_seam(
 
     assert run(["--json", "long-weekends", "GB"]) == 0
     capsys.readouterr()
-    assert fake.calls == [(BASE_URL + "/LongWeekend/2031/GB", None)]
+    assert fake.calls == [(BASE_URL + "/LongWeekend/2031/GB", _TIMEOUT_OMITTED)]
 
 
 def test_long_weekends_explicit_year_wins_over_today_seam(
@@ -1983,7 +2152,7 @@ def test_long_weekends_explicit_year_wins_over_today_seam(
 
     assert run(["--json", "long-weekends", "GB", "--year", "2026"]) == 0
     capsys.readouterr()
-    assert fake.calls == [(BASE_URL + "/LongWeekend/2026/GB", None)]
+    assert fake.calls == [(BASE_URL + "/LongWeekend/2026/GB", _TIMEOUT_OMITTED)]
 
 
 def test_long_weekends_human_rows_show_bridge_details(capsys, install):
@@ -2199,7 +2368,7 @@ def test_country_info_json_preserves_upstream_object(capsys, install):
     obj, _, err = json_out(capsys)
     assert err == ""
     assert obj["data"] == COUNTRY_INFO
-    assert fake.calls == [(BASE_URL + "/CountryInfo/GB", None)]
+    assert fake.calls == [(BASE_URL + "/CountryInfo/GB", _TIMEOUT_OMITTED)]
 
 
 def test_country_info_human_renders_labelled_fields(capsys, install):

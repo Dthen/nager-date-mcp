@@ -37,6 +37,11 @@ _COUNTY_RE = re.compile(r"[A-Za-z]{2}-[A-Za-z0-9]+")
 _INTEGER_RE = re.compile(r"[+-]?[0-9]+")
 _HTML_DOCUMENT_RE = re.compile(r"<\s*(?:!doctype|html|head|body|title)\b", re.I)
 _HTML_TAG_RE = re.compile(r"<\s*/?\s*[A-Za-z][^<>]*>")
+
+# urllib wraps a connection failure once and the transport wraps that URLError
+# again (it is an OSError), so the CLI normally sees two levels. The bound is
+# defensive only: a hand-built exception graph must not spin the unwrap.
+_MAX_URLError_WRAPPERS = 10
 _SURROGATE_RE = re.compile("[\ud800-\udfff]")
 
 # Set as soon as a stdout emission is attempted in the current main() call.
@@ -545,6 +550,31 @@ def _message_text(message: str) -> str:
     return collapsed
 
 
+def _unwrap_urlerror(cause: Any) -> Any:
+    """Collapse urllib's nested URLError wrappers to the real cause.
+
+    ``urllib.request.urlopen`` raises ``URLError(reason)`` for connection
+    failures, and ``transport.fetch_raw`` catches that through
+    ``TRANSPORT_ERRORS`` (which contains ``OSError`` and therefore URLError)
+    and wraps it once more. The CLI therefore receives
+    ``URLError(URLError(reason))``; formatting the outer string keeps
+    urllib's ``<urlopen error ...>`` text, which the HTML probe above would
+    misread. HTTPError is never unwrapped: its status mapping keeps priority.
+    """
+    depth = 0
+    while (
+        isinstance(cause, urllib.error.URLError)
+        and not isinstance(cause, urllib.error.HTTPError)
+        and depth < _MAX_URLError_WRAPPERS
+    ):
+        reason = cause.reason
+        if reason is None or reason is cause:
+            break
+        cause = reason
+        depth += 1
+    return cause
+
+
 def _classify(failure: operations.Failure) -> tuple[str, str]:
     if failure.code == "no_data":
         # CLI owns its own sentence; the shared layer carries only the code
@@ -558,6 +588,9 @@ def _classify(failure: operations.Failure) -> tuple[str, str]:
     cause = failure.cause
     if cause is None:
         return "internal_error", "Internal error."
+
+    network_failure = isinstance(cause, urllib.error.URLError)
+    cause = _unwrap_urlerror(cause)
 
     # HTTPError is both URLError and OSError: check it first.
     if isinstance(cause, urllib.error.HTTPError):
@@ -573,8 +606,15 @@ def _classify(failure: operations.Failure) -> tuple[str, str]:
     if _is_timeout(cause):
         return "timeout", "Request timed out."
 
-    if isinstance(cause, urllib.error.URLError):
-        return "network_error", _message_text(str(cause))
+    if network_failure or isinstance(cause, urllib.error.URLError):
+        if isinstance(cause, urllib.error.URLError):
+            # The unwrap stopped on a self/None/bound edge; keep the last
+            # reason rather than the outer "<urlopen error ...>" wrapper.
+            reason = cause.reason
+            text = str(cause) if reason is None else str(reason)
+        else:
+            text = str(cause)
+        return "network_error", _message_text(text)
 
     if isinstance(cause, ValueError):
         # JSON/UTF-8 decode failures are invalid responses; the client's
